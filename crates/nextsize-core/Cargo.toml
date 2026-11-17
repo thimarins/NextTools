@@ -1,0 +1,10 @@
+[package]
+name = "nextsize-core"
+description = "NextSize: modelos, contratos, opções e erros compartilhados"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true

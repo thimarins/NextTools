@@ -1,0 +1,15 @@
+[package]
+name = "nextsize-windows"
+description = "NextSize: enumeração nativa Windows (FindFirstFileExW) e utilidades Win32"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nextsize-core.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

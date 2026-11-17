@@ -1,0 +1,5 @@
+﻿/target
+*.nxs
+*.nxs-wal
+*.nxs-shm
+/bench-data

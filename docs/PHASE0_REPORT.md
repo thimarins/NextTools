@@ -32,7 +32,7 @@ Data: 2026-11-17 · Commit base: `834fff9` (checkpoint NextSize) → Fase 0
 
 ## 2. Testes executados
 
-`cargo test --workspace`: **51 testes, 51 passando** (40 unitários + 11 de integração com arquivos reais e Robocopy real). Detalhe em [TEST_PLAN](TEST_PLAN.md).
+`cargo test --workspace`: **51 testes, 51 passando** (41 unitários + 10 de integração com arquivos reais e Robocopy real). Detalhe em [TEST_PLAN](TEST_PLAN.md).
 
 Testes manuais em escala (release):
 - 100 mil e 1 milhão de arquivos sintéticos e o volume real C:\ (2,6 M arquivos, 372 GB), em 3 perfis e 2 backends, com e sem persistência.

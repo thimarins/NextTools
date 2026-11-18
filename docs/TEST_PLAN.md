@@ -10,7 +10,7 @@ target\release\nexttool size bench <raiz> --json-out bench.jsonl
 
 Legenda: ✅ automatizado e passando · 🧪 executado manualmente na Fase 0 (resultado em BENCHMARKS/PHASE0_REPORT) · ⏳ pendente (fase indicada)
 
-## 1. Unitários (40)
+## 1. Unitários (41)
 
 | Área | Testes | Status |
 |---|---|---|
@@ -36,7 +36,7 @@ Legenda: ✅ automatizado e passando · 🧪 executado manualmente na Fase 0 (re
 | Monitor: ativo → sem progresso → ativo (só I/O); lentidão persistente × queda curta; processo encerrado | `monitor` | ✅ |
 | Agendador: mesmo recurso em série, limite de concorrência, retentativa até desistir, alerta agrupado, pânico contido, cancelamento | `manager` | ✅ |
 
-## 2. Integração (11) — arquivos reais
+## 2. Integração (10) — arquivos reais
 
 | Cenário | Teste | Status |
 |---|---|---|

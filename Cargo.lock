@@ -444,7 +444,6 @@ dependencies = [
  "nexttool-tasks",
  "serde",
  "serde_json",
- "tempfile",
  "tracing",
 ]
 

@@ -88,3 +88,63 @@ Lista completa em KNOWN_ISSUES §Desktop. Principais:
 4. Dono/SID sob demanda, categorias, keyset pagination.
 5. Snapshots: comparar, renomear, excluir com confirmação, exportar/importar.
 6. Testes de UI automatizados (Playwright contra o WebView2 via CDP, reaproveitando o roteiro desta fase).
+
+---
+
+# Complemento da Fase 1 — prioridades de 2026-11-18
+
+## Situação por prioridade
+
+| # | Prioridade | Situação |
+|---|---|---|
+| 1 | SQLite: medir cada etapa, otimizar, snapshots parciais consultáveis, finalização recuperável | ✅ Instrumentação por etapa (backpressure, espera do escritor, inserção, commits, cada índice, roll-up, agregados, ANALYZE). **Total −49% e finalização −58%** a 11,1 M; ingestão linear até **111 M com 95 MB de RAM**. SQLite mantido (ADR-024). Snapshots parciais consultáveis e queda durante a finalização recuperável, com testes |
+| 2 | Desktop Tauri 2 + React + TS + Tailwind + shadcn/ui + Lucide, temas, só NextSize e NextCopy + áreas compartilhadas, sem dados simulados | ✅ (Fase 1 base). Sem dados simulados: fora do app a UI mostra "disponível apenas no desktop" |
+| 3 | NextSize: árvore virtualizada, lista paginada, filtros, progresso real, cancelamento, snapshots, sem índices grandes no IPC | ✅ Explorador com árvore virtualizada sob demanda (300 por nível), lista paginada (200), breadcrumb, filtros combinados (extensão, nome, tamanho mín/máx, datas, ano) com cancelamento e paginação, rankings e distribuição, abertura de análises em andamento/interrompidas como dados parciais |
+| 4 | NextCopy: simples e avançada, multitarefa, progresso, filas, recuperação, central de erros em linguagem simples com detalhes técnicos | ✅ Erros em linguagem simples ("o que aconteceu / o que fazer") com detalhes técnicos sob demanda (classe, mensagem, códigos de saída, arquivos com erro, log). Fila com posição e motivo da espera. Robocopy mantido como motor |
+| 5 | Testes: rede interrompida, destino sem espaço, permissões negadas, Robocopy pt-BR real, SMB/NAS, escala progressiva | ✅ Permissão negada: automatizado (revelou o achado R-1). ✅ Log real do Robocopy validado (en-US) + script de captura pronto para pt-BR. ⏳ SMB, sem espaço e queda de rede: testes prontos, ativados por variável, **dependem de infraestrutura**. ✅ Escala 1,1 M → 11,1 M → 111 M |
+| 6 | Qualidade: desempenho e segurança, 51 testes mantidos, cobertura ampliada | ✅ **66 testes passando** + 4 de campo preparados, 0 falhas. Uma regressão de memória detectada e rejeitada (484 MB, ADR-026) |
+| 7 | Distribuição instalada e portátil, WebView2 no Windows Server | ✅ Arquitetura e medições (DISTRIBUTION.md). Portátil validado. ⏳ Empacotamento e testes em Windows Server: Fase 6, dependem das VMs |
+
+## Achados importantes
+
+- **R-1 — Robocopy retorna 0 com o destino inacessível.** Com o destino negando escrita, o Robocopy imprimiu `ERROR 5 … Accessing Destination Directory`, terminou com **código 0** e mostrou o resumo zerado. Com verificação básica, a cópia teria sido marcada como "Concluída" sem copiar nada. Corrigido (ADR-028): erros de diretório agora sempre resultam em falha parcial. Teste com a saída real.
+- **Regressão de memória rejeitada:** a primeira otimização da finalização (4 threads × 128 MB) era mais rápida, mas levou o pico a 484 MB. A matriz de medições mostrou que 2 × 16 MB é mais rápido **e** respeita o orçamento.
+- **Finalização superlinear a 111 M:** os índices de filtro são 57% do tempo. O próximo passo foi identificado e medido (adiar esses índices).
+
+## Arquivos principais alterados ou criados
+
+- `nextsize-index`:
+  - `writer.rs`: agregados durante a ingestão, INSERT multi-linha, finalização com recursos limitados, estado `finalizing`, tempos por etapa;
+  - `reader.rs`: consultas em snapshots parciais, `list_subdirs`, `dir_chain`, `child_counts`, `parent_id`;
+  - `resume.rs`: aceita `finalizing`.
+- `nextsize-scanner/engine.rs`, `nextsize-core/progress.rs`: métricas de backpressure e de espera do escritor.
+- `nextcopy-robocopy`:
+  - `exit.rs`: `reconcile`;
+  - `log.rs`: contagem de erros de diretório.
+- `nexttool-tasks`:
+  - `tests/field_scenarios.rs` (novo);
+  - deduplicação de chaves de recurso.
+- `nexttool-desktop`: comandos `snapshot_list_subdirs` e `snapshot_dir_info` (24 no total, todos na allowlist).
+- `nexttool-cli`:
+  - `synth.rs` (novo): enumerador sintético em memória;
+  - `bench --synthetic` e métricas por etapa.
+- UI:
+  - `pages/explorer.tsx` (novo): explorador, filtros e rankings;
+  - `components/tasks.tsx`: erros em linguagem simples;
+  - `lib/i18n.ts`: vocabulário de erros;
+  - `pages/NextCopy.tsx`: fila.
+- `scripts/capture-robocopy-log.ps1` (novo).
+- Docs: BENCHMARKS §8, DECISIONS ADR-024 a 029, TEST_PLAN §2d/2e, ARCHITECTURE, KNOWN_ISSUES.
+
+## Verificação no app real (release, via CDP em localhost)
+
+- Explorador do snapshot de 1 M arquivos: árvore carregada sob demanda, expandir e navegar, breadcrumb, lista "1–200 de 208" em 6 ms.
+- Filtros: `.bak` ≥ 0,49 KB → 100 resultados por página, ordenados por tamanho. "Abrir pasta" leva ao explorador na pasta do arquivo.
+- NextCopy: falha por permissão mostrada como "Sem permissão — o que aconteceu / o que fazer" + detalhes técnicos.
+
+## O que preciso de você para fechar os pendentes
+
+1. Um **compartilhamento SMB/NAS** de teste (gravável), para os testes de SMB e de queda de rede.
+2. Um **volume pequeno** (VHD de ~64 MB ou pendrive) para o teste de destino sem espaço. Montar um VHD exige administrador.
+3. Rodar `scripts\capture-robocopy-log.ps1` num **Windows com interface em pt-BR** e me enviar o log.
+4. **VMs Windows Server 2016/2019/2022/2025** para os testes de compatibilidade e WebView2.

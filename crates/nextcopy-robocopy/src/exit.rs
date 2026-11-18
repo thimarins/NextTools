@@ -48,8 +48,55 @@ pub fn classify(code: Option<i32>, stats: Option<&CopyStats>, mirror: bool) -> C
     CopyOutcome::Completed
 }
 
+/// Applies what the log showed on top of the exit-code verdict. Robocopy can
+/// exit with 0 after failing to access a whole directory (no files counted,
+/// nothing copied), so a directory-level error is always a partial failure,
+/// and any observed error prevents a clean "Completed".
+pub fn reconcile(outcome: CopyOutcome, error_events: u64, dir_error_events: u64) -> CopyOutcome {
+    match outcome {
+        CopyOutcome::Completed | CopyOutcome::CompletedWithWarnings if dir_error_events > 0 => CopyOutcome::PartialFailure,
+        CopyOutcome::Completed if error_events > 0 => CopyOutcome::CompletedWithWarnings,
+        o => o,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::log::LogState;
+
+    /// Real output captured on Windows 11 (en-US): destination folder denies
+    /// writes; Robocopy prints an access error and still exits with 0.
+    #[test]
+    fn denied_destination_dir_with_exit_zero_is_not_success() {
+        let real = "2026/11/18 07:23:03 ERROR 5 (0x00000005) Accessing Destination Directory C:\\NextToolBench\\deny-test\\dst\\\n\
+Access is denied.\n\
+               Total    Copied   Skipped  Mismatch    FAILED    Extras\n\
+    Dirs :         1         1         0         0         0         0\n\
+   Files :         0         0         0         0         0         0\n\
+   Bytes :         0         0         0         0         0         0\n";
+        let mut st = LogState::new(std::path::Path::new(r"C:\NextToolBench\deny-test\dst"));
+        for l in real.lines() {
+            st.apply(l);
+        }
+        assert_eq!(st.dir_error_events, 1);
+        let by_code = super::classify(Some(0), st.summary_stats().as_ref(), false);
+        assert_eq!(by_code, CopyOutcome::Completed, "exit code alone says success");
+        assert_eq!(super::reconcile(by_code, st.error_events, st.dir_error_events), CopyOutcome::PartialFailure);
+        assert_eq!(st.errors_sample[0].kind, nexttool_core::ErrorKind::AccessDenied);
+    }
+
+    #[test]
+    fn retried_file_error_downgrades_to_warning() {
+        assert_eq!(super::reconcile(CopyOutcome::Completed, 1, 0), CopyOutcome::CompletedWithWarnings);
+        assert_eq!(super::reconcile(CopyOutcome::Completed, 0, 0), CopyOutcome::Completed);
+        assert_eq!(super::reconcile(CopyOutcome::Failed, 3, 3), CopyOutcome::Failed);
+    }
+
+    use nextcopy_core::CopyOutcome;
+}
+
+#[cfg(test)]
+mod code_tests {
     use super::*;
 
     #[test]

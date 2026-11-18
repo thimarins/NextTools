@@ -12,7 +12,7 @@ use nextcopy_core::DryRunReport;
 use nextsize_index::{DirRow, FileRow, Summary};
 use tauri::{AppHandle, State};
 
-use crate::ipc::{ApiError, ApiResult, AppInfo, Core, CopyRequest, Overview, Paged, QueryRequest, ScanRequest, Stats, TaskDetail};
+use crate::ipc::{ApiError, ApiResult, AppInfo, Core, CopyRequest, DirInfo, Overview, Paged, QueryRequest, ScanRequest, Stats, TaskDetail};
 
 type St<'a> = State<'a, Arc<Core>>;
 
@@ -81,6 +81,16 @@ pub async fn snapshot_summary(core: St<'_>, path: String) -> ApiResult<Summary> 
 #[tauri::command]
 pub async fn snapshot_list_dir(core: St<'_>, path: String, dir_id: i64, offset: Option<u32>, limit: Option<u32>, request_id: String) -> ApiResult<Paged<DirRow>> {
     blocking(core.inner(), move |c| c.snapshot_list_dir(&path, dir_id, offset.unwrap_or(0), limit, request_id)).await
+}
+
+#[tauri::command]
+pub async fn snapshot_list_subdirs(core: St<'_>, path: String, dir_id: i64, offset: Option<u32>, limit: Option<u32>, request_id: String) -> ApiResult<Paged<DirRow>> {
+    blocking(core.inner(), move |c| c.snapshot_list_subdirs(&path, dir_id, offset.unwrap_or(0), limit, request_id)).await
+}
+
+#[tauri::command]
+pub async fn snapshot_dir_info(core: St<'_>, path: String, dir_id: i64) -> ApiResult<DirInfo> {
+    blocking(core.inner(), move |c| c.snapshot_dir_info(&path, dir_id)).await
 }
 
 #[tauri::command]

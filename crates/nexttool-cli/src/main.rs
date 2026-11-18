@@ -5,6 +5,7 @@
 //! paused / cancelled · 64 usage or validation error.
 
 mod gen;
+mod synth;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -201,6 +202,10 @@ struct BenchArgs {
     /// Rótulo livre do cenário (ex.: "synthetic-1M", "C:\\ real")
     #[arg(long, default_value = "")]
     label: String,
+    /// Árvore sintética EM MEMÓRIA (sem disco): níveis,ramificação,arquivos-por-pasta.
+    /// Mede só pipeline + SQLite. Ex.: 5,10,100 = 11,1 M arquivos.
+    #[arg(long)]
+    synthetic: Option<String>,
 }
 
 #[derive(Args)]
@@ -671,6 +676,15 @@ struct BenchResult {
     max_pending_dirs: u64,
     max_spilled_dirs: u64,
     queue_budget_mb: f64,
+    /// Stage breakdown (ms): workers blocked by backpressure (sum over threads),
+    /// writer idle waiting for data, row inserts, commits/checkpoints.
+    send_blocked_ms: u64,
+    writer_wait_ms: u64,
+    insert_ms: Option<u64>,
+    commit_ms: Option<u64>,
+    commits: u64,
+    /// Finalization steps (index builds, roll-up, aggregates, analyze…).
+    finalize_steps: Option<serde_json::Value>,
     cores: usize,
     cpu: String,
     os: String,
@@ -683,6 +697,20 @@ fn file_size(p: &Path) -> u64 {
 
 fn bench(b: BenchArgs) -> Result<i32, String> {
     let root = abs(&b.root)?;
+    let synth = match &b.synthetic {
+        Some(s) => {
+            let v: Vec<usize> = s.split([',', ' ', ';']).filter(|x| !x.is_empty()).map(|x| x.parse::<usize>()).collect::<Result<_, _>>().map_err(|e| format!("--synthetic: {e}"))?;
+            if v.len() != 3 {
+                return Err("--synthetic espera 3 números: níveis,ramificação,arquivos-por-pasta".into());
+            }
+            Some((v[0].min(8), v[1].clamp(1, 1000), v[2].min(100_000)))
+        }
+        None => None,
+    };
+    if let Some((l, f, n)) = synth {
+        let (files, dirs) = synth::SynthEnumerator::new(&root, l, f, n).totals();
+        eprintln!("árvore sintética em memória: {} arquivos, {} pastas (sem acesso a disco na enumeração)", format_count(files), format_count(dirs));
+    }
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
     let profile: Profile = b.profile.into();
     let backend: Backend = b.backend.into();
@@ -694,7 +722,10 @@ fn bench(b: BenchArgs) -> Result<i32, String> {
     for run in 1..=b.repeat.max(1) {
         let before = nexttool_core::process::self_stats();
         let opts = ScanOptions { root: root.clone(), profile, backend, tuning: tuning.clone(), cross_mounts: false, spill_dir: Some(db_dir.clone()) };
-        let enumerator = make_enumerator(backend);
+        let enumerator: Arc<dyn nexttool_core::fs::DirEnumerator> = match synth {
+            Some((l, f, n)) => Arc::new(synth::SynthEnumerator::new(&root, l, f, n)),
+            None => make_enumerator(backend),
+        };
         let progress = Arc::new(ScanProgress::default());
         let db = db_dir.join(format!("bench-{}-{run}.nxs", std::process::id()));
         for ext in ["", "-wal", "-shm"] {
@@ -725,12 +756,22 @@ fn bench(b: BenchArgs) -> Result<i32, String> {
         }
         let after = nexttool_core::process::self_stats();
         let (mut index_mb, mut open_ms, mut top_ms, mut q_ms, mut ls_ms) = (None, None, None, None, None);
+        let (mut insert_ms, mut commit_ms, mut finalize_steps) = (None, None, None);
         if !b.no_persist {
             index_mb = Some(file_size(&db) as f64 / 1_048_576.0);
             let t = Instant::now();
             let s = Snapshot::open(&db).map_err(|e| e.to_string())?;
             let _ = s.summary().map_err(|e| e.to_string())?;
             open_ms = Some(t.elapsed().as_secs_f64() * 1e3);
+            if let Ok(Some(v)) = s.meta_value("ingest_timings") {
+                let j: serde_json::Value = serde_json::from_str(&v).unwrap_or_default();
+                insert_ms = j["insert_ms"].as_u64();
+                commit_ms = j["commit_ms"].as_u64();
+            }
+            if let Ok(Some(v)) = s.meta_value("finalize_timings") {
+                let steps: Vec<(String, u64)> = serde_json::from_str(&v).unwrap_or_default();
+                finalize_steps = Some(serde_json::Value::Object(steps.into_iter().map(|(k, v)| (k, serde_json::json!(v))).collect()));
+            }
             let t = Instant::now();
             let _ = s.top_files(100).map_err(|e| e.to_string())?;
             top_ms = Some(t.elapsed().as_secs_f64() * 1e3);
@@ -783,6 +824,12 @@ fn bench(b: BenchArgs) -> Result<i32, String> {
             max_pending_dirs: maxp,
             max_spilled_dirs: maxs,
             queue_budget_mb: tuning.queue_budget_bytes() as f64 / 1_048_576.0,
+            send_blocked_ms: progress.send_blocked_ns.load(std::sync::atomic::Ordering::Relaxed) / 1_000_000,
+            writer_wait_ms: progress.writer_wait_ns.load(std::sync::atomic::Ordering::Relaxed) / 1_000_000,
+            insert_ms,
+            commit_ms,
+            commits: progress.commits.load(std::sync::atomic::Ordering::Relaxed),
+            finalize_steps,
             cores,
             cpu: std::env::var("PROCESSOR_IDENTIFIER").unwrap_or_default(),
             os: std::env::consts::OS.into(),

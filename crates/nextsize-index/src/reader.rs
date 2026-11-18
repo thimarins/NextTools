@@ -12,12 +12,17 @@ use crate::IndexError;
 /// Max page size any query returns. The UI pages; it never asks for millions.
 pub const MAX_PAGE: u32 = 10_000;
 
+/// Default time limit for queries on partial (non-finalized) snapshots.
+pub const PARTIAL_TIME_LIMIT: Duration = Duration::from_secs(20);
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Summary {
     pub root: String,
     pub state: String,
     /// True only for completed snapshots; partial data must be labeled.
     pub complete: bool,
+    /// Indexes and directory totals are built (fast queries, recursive sizes).
+    pub finalized: bool,
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
     pub files: u64,
@@ -38,6 +43,7 @@ pub struct Summary {
 #[derive(Debug, Clone, Serialize)]
 pub struct FileRow {
     pub id: i64,
+    pub parent_id: i64,
     pub path: String,
     pub size: u64,
     pub mtime: Option<i64>,
@@ -143,6 +149,11 @@ impl Snapshot {
         Ok(get_meta(&self.conn, k)?)
     }
 
+    /// Raw metadata value (diagnostics/benchmarks: timings, options…).
+    pub fn meta_value(&self, k: &str) -> Result<Option<String>, IndexError> {
+        self.meta(k)
+    }
+
     pub fn summary(&self) -> Result<Summary, IndexError> {
         let state = self.meta("state")?.unwrap_or_default();
         let complete = matches!(state.as_str(), "completed" | "completed_with_warnings");
@@ -155,6 +166,7 @@ impl Snapshot {
         Ok(Summary {
             root: self.meta("root")?.unwrap_or_default(),
             complete,
+            finalized: self.is_finalized(),
             started_at: opt_i64(self.meta("started_at")?),
             finished_at: opt_i64(self.meta("finished_at")?),
             files: n("files")?,
@@ -173,15 +185,16 @@ impl Snapshot {
         })
     }
 
-    fn require_final(&self) -> Result<(), QueryError> {
-        let ok: Option<i64> = self
-            .conn
-            .query_row("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_dirs_tsize'", [], |r| r.get(0))
-            .optional()?;
-        if ok.is_none() {
-            return Err(QueryError::NotFinalized);
-        }
-        Ok(())
+    /// True when finalization finished (indexes, roll-up and aggregates exist).
+    /// Partial snapshots stay queryable, with table scans under a time limit.
+    pub fn is_finalized(&self) -> bool {
+        self.conn
+            .query_row("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_dirs_tsize'", [], |r| r.get::<_, i64>(0))
+            .optional()
+            .ok()
+            .flatten()
+            .is_some()
+            && matches!(get_meta(&self.conn, "state").ok().flatten().as_deref(), Some("completed" | "completed_with_warnings"))
     }
 
     /// Full path of a directory, rebuilt from the parent chain.
@@ -231,14 +244,27 @@ impl Snapshot {
         self.query_files(&FileQuery { sort_by_size_desc: true, limit, ..Default::default() })
     }
 
+    /// Runs `f` under the cancel token and a time limit. Finalized snapshots
+    /// have indexes (no limit needed for indexed queries); partial ones may
+    /// need table scans, so they get a default limit.
+    fn guarded<T>(&self, limit: Option<Duration>, f: impl FnOnce() -> rusqlite::Result<T>) -> Result<T, QueryError> {
+        let limit = limit.or_else(|| (!self.is_finalized()).then_some(PARTIAL_TIME_LIMIT));
+        self.guard(limit);
+        let r = f();
+        self.unguard();
+        r.map_err(|e| self.map_interrupt(e, limit))
+    }
+
     pub fn top_dirs(&self, limit: u32) -> Result<Vec<DirRow>, QueryError> {
-        self.require_final()?;
-        let mut st = self.conn.prepare(
-            "SELECT id, name, t_size, t_files, t_dirs, mtime, flags FROM dirs WHERE id<>1 ORDER BY t_size DESC LIMIT ?1",
-        )?;
-        let rows: Vec<(i64, String, i64, i64, i64, Option<i64>, u32)> = st
-            .query_map([limit.min(MAX_PAGE)], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)))?
-            .collect::<Result<_, _>>()?;
+        // Partial snapshots have no roll-up yet: fall back to direct sizes.
+        let rows: Vec<(i64, String, i64, i64, i64, Option<i64>, u32)> = self.guarded(None, || {
+            let mut st = self.conn.prepare(
+                "SELECT id, name, COALESCE(t_size,d_size), COALESCE(t_files,d_files), COALESCE(t_dirs,d_dirs), mtime, flags
+                 FROM dirs WHERE id<>1 ORDER BY COALESCE(t_size,d_size) DESC LIMIT ?1",
+            )?;
+            let rows = st.query_map([limit.min(MAX_PAGE)], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)))?;
+            rows.collect()
+        })?;
         let mut out = Vec::with_capacity(rows.len());
         for (id, name, size, files, dirs, mtime, flags) in rows {
             out.push(DirRow {
@@ -256,35 +282,75 @@ impl Snapshot {
         Ok(out)
     }
 
+    fn dir_row(r: &rusqlite::Row) -> rusqlite::Result<DirRow> {
+        Ok(DirRow {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            path: None,
+            is_dir: r.get::<_, i64>(2)? == 1,
+            size: r.get::<_, i64>(3)?.max(0) as u64,
+            files: r.get::<_, i64>(4)?.max(0) as u64,
+            dirs: r.get::<_, i64>(5)?.max(0) as u64,
+            mtime: r.get(6)?,
+            flags: r.get(7)?,
+        })
+    }
+
     /// Children of a directory (subdirectories with totals + files), largest first, paginated.
     pub fn list_dir(&self, dir_id: i64, offset: u32, limit: u32) -> Result<Vec<DirRow>, QueryError> {
-        self.require_final()?;
-        let mut st = self.conn.prepare(
-            "SELECT id, name, 1, COALESCE(t_size,0), COALESCE(t_files,0), COALESCE(t_dirs,0), mtime, flags FROM dirs WHERE parent=?1
-             UNION ALL
-             SELECT id, name, 0, size, 1, 0, mtime, flags FROM files WHERE parent=?1
-             ORDER BY 4 DESC LIMIT ?2 OFFSET ?3",
-        )?;
-        let rows = st
-            .query_map(rusqlite::params![dir_id, limit.min(MAX_PAGE), offset], |r| {
-                Ok(DirRow {
-                    id: r.get(0)?,
-                    name: r.get(1)?,
-                    path: None,
-                    is_dir: r.get::<_, i64>(2)? == 1,
-                    size: r.get::<_, i64>(3)?.max(0) as u64,
-                    files: r.get::<_, i64>(4)?.max(0) as u64,
-                    dirs: r.get::<_, i64>(5)?.max(0) as u64,
-                    mtime: r.get(6)?,
-                    flags: r.get(7)?,
-                })
-            })?
-            .collect::<Result<_, _>>()?;
-        Ok(rows)
+        self.guarded(None, || {
+            let mut st = self.conn.prepare_cached(
+                "SELECT id, name, 1, COALESCE(t_size,d_size,0), COALESCE(t_files,d_files,0), COALESCE(t_dirs,d_dirs,0), mtime, flags FROM dirs WHERE parent=?1
+                 UNION ALL
+                 SELECT id, name, 0, size, 1, 0, mtime, flags FROM files WHERE parent=?1
+                 ORDER BY 4 DESC LIMIT ?2 OFFSET ?3",
+            )?;
+            let rows = st.query_map(rusqlite::params![dir_id, limit.min(MAX_PAGE), offset], Self::dir_row)?;
+            rows.collect()
+        })
+    }
+
+    /// Only the subdirectories of a directory (for the tree view), largest
+    /// first, paginated. `dirs` > 0 means the node can be expanded.
+    pub fn list_subdirs(&self, dir_id: i64, offset: u32, limit: u32) -> Result<Vec<DirRow>, QueryError> {
+        self.guarded(None, || {
+            let mut st = self.conn.prepare_cached(
+                "SELECT id, name, 1, COALESCE(t_size,d_size,0), COALESCE(t_files,d_files,0), d_dirs, mtime, flags FROM dirs
+                 WHERE parent=?1 ORDER BY 4 DESC, name LIMIT ?2 OFFSET ?3",
+            )?;
+            let rows = st.query_map(rusqlite::params![dir_id, limit.min(MAX_PAGE), offset], Self::dir_row)?;
+            rows.collect()
+        })
+    }
+
+    /// Ancestors of a directory, root first: [(id, name)]. For breadcrumbs.
+    pub fn dir_chain(&self, mut id: i64) -> Result<Vec<(i64, String)>, QueryError> {
+        let mut chain = Vec::new();
+        let mut st = self.conn.prepare_cached("SELECT parent, name FROM dirs WHERE id=?1")?;
+        for _ in 0..4096 {
+            let (parent, name): (i64, String) = st.query_row([id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            chain.push((id, name));
+            if parent == 0 {
+                break;
+            }
+            id = parent;
+        }
+        chain.reverse();
+        Ok(chain)
+    }
+
+    /// Number of direct children (subdirectories, files) of a directory.
+    pub fn child_counts(&self, dir_id: i64) -> Result<(u64, u64), QueryError> {
+        self.guarded(None, || {
+            self.conn.query_row(
+                "SELECT (SELECT COUNT(*) FROM dirs WHERE parent=?1), (SELECT COUNT(*) FROM files WHERE parent=?1)",
+                [dir_id],
+                |r| Ok((r.get::<_, i64>(0)?.max(0) as u64, r.get::<_, i64>(1)?.max(0) as u64)),
+            )
+        })
     }
 
     pub fn query_files(&self, q: &FileQuery) -> Result<Vec<FileRow>, QueryError> {
-        self.require_final()?;
         let mut sql = String::from("SELECT f.id, f.parent, f.name, f.size, f.mtime, f.flags FROM files f");
         let mut cond: Vec<String> = Vec::new();
         let mut args: Vec<Value> = Vec::new();
@@ -333,21 +399,18 @@ impl Snapshot {
         args.push(Value::Integer(limit as i64));
         args.push(Value::Integer(q.offset as i64));
 
-        self.guard(q.time_limit);
-        let res = (|| -> rusqlite::Result<Vec<(i64, i64, String, i64, Option<i64>, u32)>> {
+        let rows: Vec<(i64, i64, String, i64, Option<i64>, u32)> = self.guarded(q.time_limit, || {
             let mut st = self.conn.prepare(&sql)?;
             let rows = st.query_map(params_from_iter(args.iter()), |r| {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
             })?;
             rows.collect()
-        })();
-        self.unguard();
-        let rows = res.map_err(|e| self.map_interrupt(e, q.time_limit))?;
+        })?;
         let mut out = Vec::with_capacity(rows.len());
         for (id, parent, name, size, mtime, flags) in rows {
             let mut p = PathBuf::from(self.dir_path(parent)?);
             p.push(name);
-            out.push(FileRow { id, path: p.to_string_lossy().into_owned(), size: size.max(0) as u64, mtime, flags });
+            out.push(FileRow { id, parent_id: parent, path: p.to_string_lossy().into_owned(), size: size.max(0) as u64, mtime, flags });
         }
         Ok(out)
     }

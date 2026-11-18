@@ -4,8 +4,10 @@ import type {
   Alert,
   AppInfo,
   CopyRequest,
+  DirInfo,
   DirRow,
   DryRunReport,
+  FileQuery,
   FileRow,
   Overview,
   Paged,
@@ -59,6 +61,11 @@ export const api = {
   snapshotSummary: (path: string) => call<Summary>("snapshot_summary", { path }),
   snapshotListDir: (path: string, dirId: number, offset: number, limit: number, requestId: string) =>
     call<Paged<DirRow>>("snapshot_list_dir", { path, dirId, offset, limit, requestId }),
+  snapshotListSubdirs: (path: string, dirId: number, offset: number, limit: number, requestId: string) =>
+    call<Paged<DirRow>>("snapshot_list_subdirs", { path, dirId, offset, limit, requestId }),
+  snapshotDirInfo: (path: string, dirId: number) => call<DirInfo>("snapshot_dir_info", { path, dirId }),
+  snapshotQuery: (path: string, query: FileQuery, requestId: string) => call<Paged<FileRow>>("snapshot_query", { path, query, requestId }),
+  snapshotCancelQuery: (requestId: string) => call<boolean>("snapshot_cancel_query", { requestId }),
   snapshotTopFiles: (path: string, limit = 50) => call<FileRow[]>("snapshot_top_files", { path, limit }),
   snapshotTopDirs: (path: string, limit = 50) => call<DirRow[]>("snapshot_top_dirs", { path, limit }),
   snapshotStats: (path: string) => call<Stats>("snapshot_stats", { path }),

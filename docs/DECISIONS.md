@@ -127,3 +127,46 @@ Teste: `two_schedulers_never_run_the_same_task`.
 
 ### ADR-023 — Fechar com tarefas em execução
 **Decisão:** o fechamento da janela é interceptado. Se há tarefas em execução, a UI pede confirmação; ao confirmar, as tarefas são **pausadas com segurança** (`TaskManager::shutdown`) antes de sair, e ficam retomáveis. Sem tarefas, fecha normalmente.
+
+---
+
+## Fase 1 — complemento (prioridades de 2026-11-18)
+
+### ADR-024 — SQLite mantido; otimizar antes de trocar
+**Contexto:** a ingestão + finalização era o gargalo (BENCHMARKS §8). A diretriz é não trocar o SQLite sem benchmark.
+**Decisão:** manter o SQLite. Otimizações medidas e adotadas:
+- agregados durante a ingestão;
+- INSERT multi-linha com *binding* direto;
+- ordenação paralela limitada na finalização;
+- ANALYZE aproximado.
+
+**Resultado:** −49% no total e −58% na finalização a 11,1 M; ingestão linear até 111 M com 95 MB de RAM.
+**Revisar quando:** a finalização a 100 M+ for inaceitável mesmo com índices de filtro adiados, ou quando o particionamento não bastar para 1 B.
+
+### ADR-025 — Agregados calculados durante a ingestão
+Por extensão (≤ 200 mil chaves) e por ano: memória limitada.
+- São válidos apenas para snapshots gravados numa única sessão.
+- Após uma retomada, são recalculados por SQL na finalização.
+- Equivalência garantida por teste.
+
+### ADR-026 — Memória da finalização dentro do orçamento do perfil
+`PRAGMA threads` × cache por thread ≤ cache SQLite do perfil (Econômico 1 × 8 MB, Equilibrado 2 × 16 MB, Rápido 4 × 16 MB). A configuração 4 × 128 MB, embora mais rápida que a original, levou o pico a 484 MB e foi **rejeitada**. Variáveis `NEXTTOOL_FIN_THREADS` / `NEXTTOOL_FIN_CACHE_KIB` existem só para benchmark.
+
+### ADR-027 — Snapshots parciais consultáveis; finalização recuperável
+- Consultas não exigem mais finalização.
+- Sem índices, usam varredura de tabela com **tempo limite de 20 s** e caem para tamanhos diretos (`d_size`) enquanto não há roll-up. A UI rotula como "dados parciais".
+- O estado `finalizing` é gravado antes da finalização; a retomada aceita esse estado e refaz a finalização, que é idempotente (`CREATE INDEX IF NOT EXISTS`, roll-up que recomeça de `d_*`, agregados com *delete + insert*).
+
+### ADR-028 — Robocopy: erros do log podem rebaixar o veredito do código de saída (achado R-1)
+**Contexto:** verificado nesta máquina: com o destino negando escrita, o Robocopy imprime `ERROR 5 … Accessing Destination Directory`, termina com **código 0** e mostra um resumo zerado.
+**Decisão** (`exit::reconcile`):
+- Erro de **diretório** observado → falha parcial, qualquer que seja o código.
+- Qualquer erro observado → nunca "Concluída", no máximo "Concluída com avisos".
+
+**Consequências:** um falso alarme é possível se um diretório falhar e depois funcionar numa retentativa (direção segura). Nunca há falso sucesso. Teste com a saída real capturada.
+
+### ADR-029 — Árvore e listas no desktop sem transferir índices
+- A árvore carrega subpastas sob demanda (`snapshot_list_subdirs`, 300 por página, as maiores primeiro) e é virtualizada.
+- A lista da pasta é paginada (200 por página) com contagem total (`snapshot_dir_info`).
+- Filtros: 100 resultados por página, cancelamento por `request_id` e respostas obsoletas descartadas.
+- Nenhuma lista completa cruza o IPC.

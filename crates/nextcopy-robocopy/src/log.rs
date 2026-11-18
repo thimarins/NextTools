@@ -181,6 +181,10 @@ pub struct LogState {
     pub extra_dirs: u64,
     pub delete_sample: Vec<String>,
     pub error_events: u64,
+    /// Errors on a whole directory ("Accessing Destination Directory X\…").
+    /// Robocopy may still exit with 0 in this case (verified on Windows 11):
+    /// the directory was simply not processed.
+    pub dir_error_events: u64,
     pub errors_sample: Vec<FileError>,
     pub summary: Vec<[u64; 6]>,
 }
@@ -220,6 +224,9 @@ impl LogState {
             }
             Line::Error { code, path } => {
                 self.error_events += 1;
+                if path.as_deref().is_none_or(|p| p.ends_with('\\')) {
+                    self.dir_error_events += 1;
+                }
                 let fe = FileError { os_code: code, kind: classify_os_error(code), path: path.unwrap_or_default(), final_failure: false };
                 if self.errors_sample.len() < ERROR_SAMPLE_CAP && !self.errors_sample.iter().any(|e| e.path == fe.path && e.os_code == fe.os_code) {
                     self.errors_sample.push(fe.clone());

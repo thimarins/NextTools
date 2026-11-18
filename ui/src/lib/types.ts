@@ -89,6 +89,7 @@ export interface Summary {
   root: string;
   state: string;
   complete: boolean;
+  finalized: boolean;
   started_at: number | null;
   finished_at: number | null;
   files: number;
@@ -107,6 +108,7 @@ export interface Summary {
 
 export interface FileRow {
   id: number;
+  parent_id: number;
   path: string;
   size: number;
   mtime: number | null;
@@ -129,6 +131,24 @@ export interface Paged<T> {
   request_id: string;
   rows: T[];
   elapsed_ms: number;
+}
+
+export interface DirInfo {
+  chain: [number, string][];
+  subdirs: number;
+  files: number;
+}
+
+export interface FileQuery {
+  min_size?: number | null;
+  max_size?: number | null;
+  ext?: string | null;
+  modified_before?: number | null;
+  modified_after?: number | null;
+  year?: number | null;
+  name_contains?: string | null;
+  offset: number;
+  limit: number;
 }
 
 export interface Stats {

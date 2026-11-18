@@ -54,6 +54,19 @@ export default function NextCopyPage() {
   useThrottledEffect(tasks.reload, version, 1500);
   const copies = useMemo(() => (tasks.data ?? []).filter((t) => t.kind === "copy").slice(0, 30), [tasks.data]);
 
+  // Queue position (priority desc, FIFO) and why a queued task is waiting.
+  const notes = useMemo(() => {
+    const all = tasks.data ?? [];
+    const running = all.filter((t) => t.state === "running" || t.state === "cancelling");
+    const queued = all.filter((t) => t.state === "queued").sort((a, b) => (a.priority === b.priority ? a.id - b.id : a.priority === "high" ? -1 : 1));
+    const m = new Map<number, string>();
+    queued.forEach((t, i) => {
+      const busy = running.find((r) => r.resource_keys.some((k) => t.resource_keys.includes(k)));
+      m.set(t.id, `Na fila — posição ${i + 1}${busy ? ` · aguardando "${busy.title}" (mesmo disco/compartilhamento)` : " · aguardando vaga (limite de tarefas simultâneas)"}`);
+    });
+    return m;
+  }, [tasks.data]);
+
   const deletions = plan ? plan.would_delete_files + plan.would_delete_dirs : 0;
 
   const doPlan = async () => {
@@ -195,7 +208,7 @@ export default function NextCopyPage() {
           ) : copies.length ? (
             <div className="border-t">
               {copies.map((t) => (
-                <TaskRow key={t.id} task={t} onOpen={setOpen} onChanged={tasks.reload} />
+                <TaskRow key={t.id} task={t} onOpen={setOpen} onChanged={tasks.reload} note={notes.get(t.id)} />
               ))}
             </div>
           ) : (

@@ -72,6 +72,12 @@ pub struct ScanProgress {
     pub rows_committed: AtomicU64,
     pub commits: AtomicU64,
     pub queued_chunks: AtomicU64,
+    /// Total time enumeration workers spent blocked because the writer queue
+    /// was full (backpressure). High values = persistence is the bottleneck.
+    pub send_blocked_ns: AtomicU64,
+    /// Total time the writer waited for data. High values = enumeration
+    /// (disk/network) is the bottleneck.
+    pub writer_wait_ns: AtomicU64,
 }
 
 #[derive(Debug, Clone, Serialize)]

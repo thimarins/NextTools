@@ -79,6 +79,34 @@ App `NextTool.exe` em release, conduzido pelo WebView2 com depuração remota (a
 | Histórico compartilhado CLI ↔ app (modo portátil) | 🧪 ok |
 | Alerta criado pela CLI (acesso negado) exibido com todos os campos | 🧪 ok |
 
+## 2d. Testes de campo (preparados) — `crates/nexttool-tasks/tests/field_scenarios.rs`
+
+Executam a pilha completa (TaskManager → runner → Robocopy/scanner → store/alertas). Os que exigem infraestrutura ficam `#[ignore]` e são ativados por variável de ambiente:
+
+```
+cargo test -p nexttool-tasks --test field_scenarios -- --include-ignored
+```
+
+| Cenário | Ativação | Status |
+|---|---|---|
+| Destino sem permissão de escrita → `Falhou (access_denied)`, **sem retentativa**, alerta "Permissão negada" | automático | ✅ (revelou o achado R-1 abaixo) |
+| Log **real** do Robocopy reconciliado com o resumo (linhas = copiados + falhas; erro 0x20 reconhecido) | `NEXTTOOL_TEST_PTBR_LOG` (+ `NEXTTOOL_TEST_PTBR_DEST`) | ✅ com log real **en-US** capturado nesta máquina · ⏳ pt-BR: rodar `scripts\capture-robocopy-log.ps1` num Windows com interface pt-BR |
+| SMB: cópia → verificação rigorosa → análise NextSize do compartilhamento (`source_kind = remote`) | `NEXTTOOL_TEST_SMB_DIR=\\servidor\share\pasta` | ⏳ requer compartilhamento |
+| Destino sem espaço → `Falhou (disk_full)`, sem retentativa | `NEXTTOOL_TEST_SMALL_VOLUME=E:\` (VHD de ~64 MB) | ⏳ requer volume pequeno |
+| Queda de rede no meio da cópia → `aguardando nova tentativa` → retomada → concluída com hash idêntico | `NEXTTOOL_TEST_NET_INTERRUPT_DIR` + operador | ⏳ requer SMB e intervenção |
+
+**Achado R-1 (real, corrigido):** com o destino negando escrita, o Robocopy imprime `ERROR 5 … Accessing Destination Directory` e **termina com código 0** e resumo zerado. Pelo código de saída, a cópia seria "concluída" sem copiar nada; antes da correção, só a verificação padrão evitava o falso sucesso. Agora erros de diretório sempre resultam em falha parcial e qualquer erro observado impede "Concluída" (`exit::reconcile`), com teste usando a saída real capturada.
+
+## 2e. Escala progressiva da camada de persistência (enumerador sintético em memória)
+
+`nexttool-cli size bench <raiz> --synthetic níveis,ramificação,arquivos` gera a árvore em memória: mede só pipeline + SQLite, sem criar milhões de arquivos reais (que aumentariam a MFT do volume de forma permanente). Resultados rotulados `synthetic-index`. Ver BENCHMARKS §8.
+
+| Escala | Status |
+|---|---|
+| 1,1 M / 11,1 M registros | ✅ antes/depois das otimizações |
+| 111 M registros | 🧪 (BENCHMARKS §8) |
+| 1 B registros | ⏳ precisa de ~125 GB livres e várias horas; particionamento (ADR-005) |
+
 ## 3. Manuais / escala (Fase 0)
 
 | Cenário | Status |

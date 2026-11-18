@@ -12,6 +12,8 @@ pub const COMMANDS: &[&str] = &[
     "size_scan_submit",
     "snapshot_summary",
     "snapshot_list_dir",
+    "snapshot_list_subdirs",
+    "snapshot_dir_info",
     "snapshot_top_files",
     "snapshot_top_dirs",
     "snapshot_query",

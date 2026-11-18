@@ -299,6 +299,7 @@ impl CopyEngine for RobocopyEngine {
             let s = out.state.stats();
             let summary = out.state.summary_stats();
             let mut o = classify(out.exit_code, summary.as_ref(), job.options.mirror);
+            o = crate::exit::reconcile(o, out.state.error_events, out.state.dir_error_events);
             if o == CopyOutcome::Cancelled && control.is_pause_requested() && !control.is_cancelled() {
                 o = CopyOutcome::Paused;
             }

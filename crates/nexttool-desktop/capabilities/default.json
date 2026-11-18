@@ -20,6 +20,8 @@
     "allow-size-scan-submit",
     "allow-snapshot-summary",
     "allow-snapshot-list-dir",
+    "allow-snapshot-list-subdirs",
+    "allow-snapshot-dir-info",
     "allow-snapshot-top-files",
     "allow-snapshot-top-dirs",
     "allow-snapshot-query",

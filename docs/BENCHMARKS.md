@@ -119,3 +119,75 @@ A verificação rigorosa é dominada pela abertura de 200 mil arquivos pequenos 
 ## 7. Não medido ainda
 
 10 M, 100 M e 1 B arquivos · SMB e NAS reais · rede lenta ou instável · destino sem espaço · CPU e I/O de outros processos durante a varredura (impacto na origem) · IOPS · comparação com WizTree · Linux. Ver [TEST_PLAN.md](TEST_PLAN.md) §4.
+
+---
+
+## 8. Persistência: medição por etapa e otimização (2026-11-18)
+
+Dados brutos: [`benchmarks/results-2026-11-18.jsonl`](../benchmarks/results-2026-11-18.jsonl). Mesmo hardware da §1.
+
+### 8.1 Instrumentação adicionada
+
+| Métrica | Significado |
+|---|---|
+| `send_blocked_ms` | tempo somado em que os workers ficaram bloqueados pelo backpressure → indica que a **persistência** é o gargalo |
+| `writer_wait_ms` | tempo em que o escritor esperou dados → indica que a **enumeração** (disco/rede) é o gargalo |
+| `insert_ms` / `commit_ms` | tempo do escritor inserindo linhas / fazendo commits (checkpoints) |
+| `finalize_steps` | tempo de cada índice, do roll-up, dos agregados e do ANALYZE |
+
+**Enumerador sintético em memória** (`--synthetic níveis,ramificação,arquivos`): mede só pipeline + SQLite, sem criar arquivos reais. Não é um número de varredura de disco.
+
+### 8.2 Antes × depois — 11,1 M registros (sintético em memória, perfil Equilibrado)
+
+| Etapa | Antes | Depois | Mudança |
+|---|---|---|---|
+| Ingestão (enumeração + inserção + checkpoints) | 19,6 s | 15,0 s (3 execuções: 14,7–16,0 s) | INSERT de 64/16/4 linhas com *binding* direto; extensão sem alocação |
+| ↳ inserção / commits | 15,4 s / 3,9 s | 10,0–10,3 s / 4,2–5,4 s | |
+| Agregados (extensão, ano) | 11,4 s | **~0 s** | calculados durante a ingestão, em memória limitada |
+| Índices de arquivos (ext, mtime, size, parent) | 35,9 s | 19,8 s | ordenação paralela (`PRAGMA threads`) com cache moderado |
+| ANALYZE | 5,1 s | 0,3 s | `analysis_limit=1000` (estatísticas aproximadas) |
+| **Finalização total** | **52,8 s** | **21,3–23,1 s** (−58%) | |
+| **Total** | **72,3 s** | **36,3–37,9 s** (−49%) | |
+| RAM pico | 74 MB | 90–92 MB | dentro do orçamento do perfil |
+
+Observação metodológica: o "antes" usou 8 threads de geração sintética; o "depois" estável usou 2, porque com 8 o próprio gerador disputa CPU com o escritor. A finalização foi comparada nas mesmas condições (8 threads: 52,8 → 22,6 s).
+
+### 8.3 Matriz threads × cache na finalização (11,1 M)
+
+| Threads de ordenação × cache | Finalização | RAM pico |
+|---|---|---|
+| 0 × 32 MB (original) | 36,3 s* | 75 MB |
+| 0 × 128 MB | 41,1 s | 273 MB |
+| 4 × 128 MB (1ª tentativa) | 29,0 s | **484 MB** ✗ (rejeitado: estoura o orçamento) |
+| 2 × 32 MB | 24,2 s | 139 MB |
+| **2 × 16 MB (escolhido para Equilibrado)** | **22,1 s** | **91 MB** |
+| 4 × 8 MB | 23,3 s | 81 MB |
+
+\* sem os agregados e o ANALYZE antigos. Conclusão: cache maior **não** acelera a criação de índices; ordenação paralela com cache modesto, sim. Regra adotada: threads = cache do perfil ÷ 16 MB (1–4); cache por thread ≤ 16 MB → a memória da finalização fica dentro do orçamento SQLite do perfil.
+
+### 8.4 Escala progressiva (sintético em memória, Equilibrado, 2 threads)
+
+| Registros | Ingestão | Taxa | Finalização | Total | RAM pico | Índice | Abrir resumo | Top 100 | Consulta `.bak` | Listar raiz |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1,1 M | 1,8 s | 613 k/s | 3,3 s | 5,1 s | 190 MB† | 123 MB | — | — | — | — |
+| 11,1 M | 15,0 s | 740 k/s | 21,3 s | 36,3 s | 90 MB | 1,25 GB | 2 ms | 4 ms | 5 ms | 0,3 ms |
+| **111,1 M** | **154 s** | **721 k/s** | **312 s** | **7,8 min** | **95 MB** | **12,75 GB** | **3,8 ms** | 220 ms | 223 ms | 3 ms |
+
+† execução com a configuração rejeitada (4 × 128 MB).
+
+- **Ingestão linear** (≈ 720 k registros/s) e **memória constante** (90 → 95 MB de 11 M para 111 M).
+- **A finalização cresce de forma superlinear** (×14 para 10× dados): é a ordenação dos índices em disco. A 111 M, os índices de filtro `ext` (100 s) e `mtime` (78 s) são 57% da finalização. **Próxima otimização candidata:** marcar o snapshot como utilizável após os índices essenciais (`parent`, `size`, pastas, roll-up) e construir os índices de filtro depois. Para 1 B: particionamento (ADR-005).
+- Top 100 a 111 M: 220 ms, dominado pela reconstrução de 100 caminhos (cadeia de pastas) com cache frio.
+
+### 8.5 Sistema de arquivos real, depois da otimização
+
+| Conjunto | Varredura | Finalização antes → depois | Total antes → depois | RAM |
+|---|---|---|---|---|
+| synthetic-1M (arquivos reais) | 4,3 s | 4,3 s → **2,5 s** | 7,8 s → 6,8 s | 61 MB |
+| C:\ real (2,64 M arquivos, cache parcialmente frio) | 45,5 s (`writer_wait` 27 s → disco é o gargalo) | 11,3 s → **6,8 s** | — | 92 MB |
+
+### 8.6 Garantias verificadas por teste após as mudanças
+
+- Agregados em memória **idênticos** ao `GROUP BY` SQL (`in_memory_aggregates_equal_sql_aggregates`); `year_of` idêntico ao `strftime` do SQLite, inclusive datas negativas e bissextas.
+- **Snapshot parcial consultável** (listar, subpastas, top, consulta, contagens) e rotulado (`partial_snapshot_is_queryable_and_labeled`).
+- **Queda durante a finalização é recuperável**: estado `finalizing` persistido antes de finalizar; a retomada refaz a finalização (idempotente) e o resultado passa no `verify()` com totais exatos (`crash_during_finalization_is_recoverable`).

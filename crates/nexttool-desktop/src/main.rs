@@ -67,6 +67,8 @@ fn main() {
             commands::size_scan_submit,
             commands::snapshot_summary,
             commands::snapshot_list_dir,
+            commands::snapshot_list_subdirs,
+            commands::snapshot_dir_info,
             commands::snapshot_top_files,
             commands::snapshot_top_dirs,
             commands::snapshot_query,

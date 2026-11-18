@@ -127,6 +127,14 @@ pub struct Paged<T> {
 }
 
 #[derive(Debug, Serialize)]
+pub struct DirInfo {
+    /// Root first: (dir id, name). The root's name is the full scanned path.
+    pub chain: Vec<(i64, String)>,
+    pub subdirs: u64,
+    pub files: u64,
+}
+
+#[derive(Debug, Serialize)]
 pub struct Stats {
     pub extensions: Vec<ExtRow>,
     pub years: Vec<YearRow>,
@@ -275,6 +283,21 @@ impl Core {
         let t = std::time::Instant::now();
         let rows = self.open_snapshot(path)?.list_dir(dir_id, offset, page(limit))?;
         Ok(Paged { request_id, rows, elapsed_ms: t.elapsed().as_millis() as u64 })
+    }
+
+    /// Tree view: only subdirectories, largest first, paginated.
+    pub fn snapshot_list_subdirs(&self, path: &str, dir_id: i64, offset: u32, limit: Option<u32>, request_id: String) -> ApiResult<Paged<DirRow>> {
+        let t = std::time::Instant::now();
+        let rows = self.open_snapshot(path)?.list_subdirs(dir_id, offset, page(limit))?;
+        Ok(Paged { request_id, rows, elapsed_ms: t.elapsed().as_millis() as u64 })
+    }
+
+    /// Breadcrumb chain and child counts (for pagination) of one directory.
+    pub fn snapshot_dir_info(&self, path: &str, dir_id: i64) -> ApiResult<DirInfo> {
+        let s = self.open_snapshot(path)?;
+        let chain = s.dir_chain(dir_id)?;
+        let (subdirs, files) = s.child_counts(dir_id)?;
+        Ok(DirInfo { chain, subdirs, files })
     }
 
     pub fn snapshot_top_files(&self, path: &str, limit: Option<u32>) -> ApiResult<Vec<FileRow>> {
@@ -454,6 +477,13 @@ mod tests {
         assert_eq!(q.rows.len(), 25);
         let ls = c.snapshot_list_dir(&path, 1, 0, Some(10), "r2".into()).unwrap();
         assert_eq!(ls.rows.len(), 1);
+        let sub = c.snapshot_list_subdirs(&path, 1, 0, Some(10), "r3".into()).unwrap();
+        assert_eq!(sub.rows.len(), 1);
+        assert_eq!(sub.rows[0].name, "a");
+        let info = c.snapshot_dir_info(&path, sub.rows[0].id).unwrap();
+        assert_eq!(info.chain.len(), 2);
+        assert_eq!((info.subdirs, info.files), (0, 50));
+        assert_eq!(q.rows[0].parent_id, sub.rows[0].id, "file rows carry their folder id");
         assert!(c.snapshot_stats(&path).unwrap().extensions.iter().any(|e| e.ext == "bak"));
         let ov = c.overview().unwrap();
         assert_eq!(ov.recent_scans.len(), 1);

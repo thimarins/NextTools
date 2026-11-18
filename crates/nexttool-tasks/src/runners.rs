@@ -42,10 +42,11 @@ pub enum TaskSpec {
 
 impl TaskSpec {
     pub fn to_new_task(&self, title: String) -> NewTask {
-        let (kind, keys, attempts) = match self {
+        let (kind, mut keys, attempts) = match self {
             TaskSpec::SizeScan(s) => (TaskKind::SizeScan, vec![resource_key(&s.root)], 1),
             TaskSpec::Copy(c) => (TaskKind::Copy, vec![resource_key(&c.job.source), resource_key(&c.job.dest)], 5),
         };
+        keys.dedup();
         NewTask {
             kind,
             title,

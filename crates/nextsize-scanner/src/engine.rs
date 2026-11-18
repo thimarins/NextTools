@@ -132,7 +132,10 @@ pub fn run_scan(
         .spawn(move || {
             let mut checkpointed = false;
             loop {
-                match rx.recv_timeout(Duration::from_millis(250)) {
+                let wait = Instant::now();
+                let got = rx.recv_timeout(Duration::from_millis(250));
+                wctx.progress.writer_wait_ns.fetch_add(wait.elapsed().as_nanos() as u64, Relaxed);
+                match got {
                     Ok(msg) => {
                         wctx.progress.queued_chunks.fetch_sub(1, Relaxed);
                         if let Err(e) = sink.write(msg) {
@@ -274,7 +277,18 @@ fn worker(idx: usize, ctx: Arc<Ctx>, tx: Sender<SinkMsg>) {
 
 fn send(ctx: &Ctx, tx: &Sender<SinkMsg>, msg: SinkMsg) -> bool {
     ctx.progress.queued_chunks.fetch_add(1, Relaxed);
-    if tx.send(msg).is_err() {
+    let res = match tx.try_send(msg) {
+        Ok(()) => Ok(()),
+        Err(crossbeam_channel::TrySendError::Full(msg)) => {
+            // Backpressure: measure how long the writer makes us wait.
+            let t = Instant::now();
+            let r = tx.send(msg).map_err(|_| ());
+            ctx.progress.send_blocked_ns.fetch_add(t.elapsed().as_nanos() as u64, Relaxed);
+            r
+        }
+        Err(crossbeam_channel::TrySendError::Disconnected(_)) => Err(()),
+    };
+    if res.is_err() {
         ctx.progress.queued_chunks.fetch_sub(1, Relaxed);
         return false;
     }

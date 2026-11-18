@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   Ban,
   CheckCircle2,
+  ChevronDown,
   CircleDashed,
   Clock,
   Copy as CopyIcon,
@@ -16,7 +17,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
-import { taskKindLabel, taskStateLabel } from "@/lib/i18n";
+import { plainError, taskKindLabel, taskStateLabel } from "@/lib/i18n";
 import { useLatest, useMaybeLatest } from "@/lib/live";
 import { useAsync } from "@/lib/hooks";
 import type { TaskRecord, TaskState } from "@/lib/types";
@@ -131,9 +132,10 @@ export function TaskActions({ t, onChanged }: { t: TaskRecord; onChanged?: () =>
   );
 }
 
-export function TaskRow({ task, onOpen, onChanged }: { task: TaskRecord; onOpen?: (t: TaskRecord) => void; onChanged?: () => void }) {
+export function TaskRow({ task, onOpen, onChanged, note }: { task: TaskRecord; onOpen?: (t: TaskRecord) => void; onChanged?: () => void; note?: string }) {
   const t = useLatest(task);
   const running = t.state === "running" || t.state === "cancelling";
+  const showErr = t.error_message && (t.state === "failed" || t.state === "waiting_retry" || t.state === "interrupted");
   return (
     <div className="group flex items-center gap-3 border-b px-[var(--card-pad)] py-2.5 last:border-b-0 hover:bg-muted/40">
       <KindIcon t={t} />
@@ -141,8 +143,19 @@ export function TaskRow({ task, onOpen, onChanged }: { task: TaskRecord; onOpen?
         <div className="flex items-center gap-2">
           <span className="truncate text-sm font-medium">{t.title}</span>
         </div>
-        <div className="mt-0.5 truncate text-xs text-muted-foreground">
-          {running ? <TaskProgressText t={t} /> : t.error_message ? <span className="text-destructive">{t.error_message}</span> : relTime(t.finished_at ?? t.updated_at)}
+        <div className="mt-0.5 truncate text-xs text-muted-foreground" title={t.error_message ?? undefined}>
+          {running ? (
+            <TaskProgressText t={t} />
+          ) : showErr ? (
+            <span className={t.state === "failed" ? "text-destructive" : "text-warning"}>
+              {plainError(t.error_kind).title}
+              {t.state === "waiting_retry" && t.next_retry_at ? ` — nova tentativa ${relTime(t.next_retry_at).replace("há ", "em ")}` : ""}
+            </span>
+          ) : note ? (
+            note
+          ) : (
+            relTime(t.finished_at ?? t.updated_at)
+          )}
         </div>
         {running && <Progress className="mt-1.5" />}
       </button>
@@ -180,12 +193,7 @@ export function TaskDetailDialog({ task, onClose }: { task: TaskRecord | null; o
               <Progress className="mt-2" />
             </div>
           )}
-          {t.error_message && (
-            <div className="mb-4 rounded-lg border border-destructive/30 bg-destructive/8 p-3 text-sm text-destructive">
-              <p className="font-medium">Erro ({t.error_kind})</p>
-              <p className="mt-1">{t.error_message}</p>
-            </div>
-          )}
+          {t.error_message && <PlainError t={t} result={result} />}
           <dl className="mb-4">
             <KV k="Criada" v={formatDate(t.created_at)} />
             <KV k="Iniciada" v={formatDate(t.started_at)} />
@@ -209,6 +217,53 @@ export function TaskDetailDialog({ task, onClose }: { task: TaskRecord | null; o
         </DialogContent>
       )}
     </Dialog>
+  );
+}
+
+/** Error in plain language first; technical details on demand. */
+function PlainError({ t, result }: { t: TaskRecord; result: Record<string, any> | null }) {
+  const [open, setOpen] = useState(false);
+  const p = plainError(t.error_kind);
+  const samples: { os_code: number; kind: string; path: string }[] = result?.errors_sample ?? [];
+  const failed = t.state === "failed";
+  return (
+    <div className={`mb-4 rounded-lg border p-3 text-sm ${failed ? "border-destructive/30 bg-destructive/8" : "border-warning/40 bg-warning/10"}`}>
+      <p className={`font-semibold ${failed ? "text-destructive" : ""}`}>{p.title}</p>
+      <p className="mt-1">
+        <span className="text-muted-foreground">O que aconteceu: </span>
+        {p.what}
+      </p>
+      <p className="mt-1">
+        <span className="text-muted-foreground">O que fazer: </span>
+        {p.todo}
+      </p>
+      <button className="mt-2 flex cursor-default items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground" onClick={() => setOpen((v) => !v)}>
+        <ChevronDown className={`size-3.5 transition-transform ${open ? "" : "-rotate-90"}`} /> Detalhes técnicos
+      </button>
+      {open && (
+        <div className="mt-2 grid gap-2 rounded-md bg-card p-2 font-mono text-xs">
+          <p>
+            classe: {t.error_kind ?? "—"}
+            <br />
+            mensagem: {t.error_message}
+          </p>
+          {result?.exit_codes && <p>códigos de saída do Robocopy: {JSON.stringify(result.exit_codes)}</p>}
+          {samples.length > 0 && (
+            <div>
+              <p className="mb-1">erros observados (até 200; podem incluir arquivos que deram certo numa nova tentativa):</p>
+              <ul className="max-h-40 overflow-y-auto">
+                {samples.map((s, i) => (
+                  <li key={i} className="truncate" title={s.path}>
+                    0x{s.os_code.toString(16).padStart(8, "0")} {s.kind} — {s.path}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {result && result.log_files?.length > 0 && <p className="break-all">log: {result.log_files.join(", ")}</p>}
+        </div>
+      )}
+    </div>
   );
 }
 

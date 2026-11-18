@@ -38,7 +38,15 @@ pub fn open_for_resume(path: &Path, cache_kib: u64, progress: Arc<ScanProgress>)
     let state = get_meta(&conn, "state")?.unwrap_or_default();
     let resumable = matches!(
         ScanState::parse(&state),
-        Some(ScanState::Scanning | ScanState::Interrupted | ScanState::Paused | ScanState::Preparing | ScanState::Cancelling | ScanState::Failed)
+        Some(
+            ScanState::Scanning
+                | ScanState::Interrupted
+                | ScanState::Paused
+                | ScanState::Preparing
+                | ScanState::Cancelling
+                | ScanState::Failed
+                | ScanState::Finalizing
+        )
     );
     if !resumable {
         return Err(IndexError::NotResumable(state));

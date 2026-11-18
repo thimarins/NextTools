@@ -50,10 +50,53 @@ pub struct IndexWriter {
     c_bytes: u64,
     c_dirs: u64,
     c_issues: u64,
+    /// Time spent inserting rows (excluding commits) and committing.
+    t_write: std::time::Duration,
+    t_commit: std::time::Duration,
+    /// Aggregates maintained during ingestion (bounded: ≤ EXT_DICT_CAP + 1
+    /// extension buckets, one bucket per year). Valid only for a snapshot
+    /// written in one uninterrupted session; after a resume they are
+    /// recomputed with SQL at finalize.
+    agg_ext: HashMap<i64, (i64, i64)>,
+    agg_year: HashMap<Option<i64>, (i64, i64)>,
+    aggs_valid: bool,
+    /// Page cache during finalization. SQLite's sorter may use up to this
+    /// amount *per sorter thread*, so threads × cache bounds finalize memory.
+    finalize_cache_kib: u64,
+    finalize_threads: u64,
+    /// Reused buffer for batched file inserts.
+    file_batch: Vec<(nextsize_core::EntryRecord, i64)>,
 }
+
+/// Rows per multi-row INSERT (13 params each → 832 bound parameters).
+const FILE_BATCH: usize = 64;
 
 fn i64s(v: u64) -> i64 {
     i64::try_from(v).unwrap_or(i64::MAX)
+}
+
+/// UTC year of a Unix timestamp (same result as SQLite strftime('%Y', t, 'unixepoch')).
+pub(crate) fn year_of(unix: i64) -> i64 {
+    let days = unix.div_euclid(86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    yoe + era * 400 + if m <= 2 { 1 } else { 0 }
+}
+
+/// Extension slice of a name if it is already normalized (lowercase ASCII),
+/// so the common case needs no allocation.
+fn ext_slice(name: &str) -> Option<&str> {
+    let dot = name.rfind('.')?;
+    if dot == 0 || dot + 1 == name.len() {
+        return None;
+    }
+    let e = &name[dot + 1..];
+    (e.len() <= nextsize_core::ext::MAX_EXT_LEN && e.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')).then_some(e)
 }
 
 impl IndexWriter {
@@ -94,7 +137,9 @@ impl IndexWriter {
             "INSERT INTO dirs(id,parent,depth,name,state,flags) VALUES(?1,0,0,?2,0,0)",
             params![ROOT_ID as i64, root],
         )?;
-        Ok(Self::from_conn(conn, path, opts, progress))
+        let mut w = Self::from_conn(conn, path, opts, progress);
+        w.aggs_valid = true; // fresh snapshot: in-memory aggregates see every row
+        Ok(w)
     }
 
     pub(crate) fn from_conn(conn: Connection, path: &Path, opts: &ScanOptions, progress: Arc<ScanProgress>) -> Self {
@@ -125,6 +170,17 @@ impl IndexWriter {
             c_issues: progress.issues.load(Relaxed),
             progress,
             timings: Vec::new(),
+            t_write: Default::default(),
+            t_commit: Default::default(),
+            agg_ext: HashMap::new(),
+            agg_year: HashMap::new(),
+            aggs_valid: false,
+            // Measured (BENCHMARKS §8): parallel sorting with a modest cache
+            // beats a big cache; keep threads × cache within the profile's
+            // SQLite budget (Economy 1×8 MB, Balanced 2×16 MB, Fast 4×16 MB).
+            finalize_threads: (opts.tuning.sqlite_cache_kib / (16 * 1024)).clamp(1, 4),
+            finalize_cache_kib: (opts.tuning.sqlite_cache_kib / (opts.tuning.sqlite_cache_kib / (16 * 1024)).clamp(1, 4)).clamp(8 * 1024, 16 * 1024),
+            file_batch: Vec::with_capacity(FILE_BATCH),
         }
     }
 
@@ -141,6 +197,13 @@ impl IndexWriter {
     }
 
     fn commit(&mut self) -> rusqlite::Result<()> {
+        let t = Instant::now();
+        let r = self.commit_inner();
+        self.t_commit += t.elapsed();
+        r
+    }
+
+    fn commit_inner(&mut self) -> rusqlite::Result<()> {
         if self.in_tx {
             // Same transaction as the rows: counters always match committed data.
             for (k, v) in [("files", self.c_files), ("bytes", self.c_bytes), ("dirs", self.c_dirs), ("issues", self.c_issues)] {
@@ -157,6 +220,11 @@ impl IndexWriter {
     }
 
     fn ext_id(&mut self, name: &str) -> rusqlite::Result<i64> {
+        if let Some(e) = ext_slice(name) {
+            if let Some(&id) = self.exts.get(e) {
+                return Ok(id);
+            }
+        }
         let Some(ext) = normalize_ext(name) else { return Ok(0) };
         if let Some(&id) = self.exts.get(&ext) {
             return Ok(id);
@@ -225,27 +293,19 @@ impl IndexWriter {
                         if let Some(a) = e.alloc {
                             acc.alloc = Some(acc.alloc.unwrap_or(0).saturating_add(i64s(a)));
                         }
-                        self.conn
-                            .prepare_cached(
-                                "INSERT INTO files(id,parent,name,ext,kind,size,alloc,mtime,ctime,atime,flags,file_id,nlink) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
-                            )?
-                            .execute(params![
-                                e.id as i64,
-                                c.dir_id as i64,
-                                &*e.name,
-                                ext,
-                                e.kind as u8,
-                                i64s(e.size),
-                                e.alloc.map(i64s),
-                                e.mtime,
-                                e.ctime,
-                                e.atime,
-                                e.flags,
-                                e.file_id.map(|v| v as i64),
-                                e.nlink
-                            ])?;
+                        let ae = self.agg_ext.entry(ext).or_insert((0, 0));
+                        ae.0 += 1;
+                        ae.1 = ae.1.saturating_add(i64s(e.size));
+                        let ay = self.agg_year.entry(e.mtime.map(year_of)).or_insert((0, 0));
+                        ay.0 += 1;
+                        ay.1 = ay.1.saturating_add(i64s(e.size));
+                        self.file_batch.push((e, ext));
+                        if self.file_batch.len() == FILE_BATCH {
+                            self.flush_files(c.dir_id)?;
+                        }
                     }
                 }
+                self.flush_files(c.dir_id)?;
                 self.rows_since += n;
                 if c.last {
                     let extra = if c.enum_error { flags::ENUM_ERROR } else { 0 };
@@ -264,6 +324,57 @@ impl IndexWriter {
         if self.rows_since >= self.commit_rows || self.last_commit.elapsed().as_millis() as u64 >= self.commit_interval_ms {
             self.commit()?;
         }
+        Ok(())
+    }
+
+    /// Inserts the buffered files of one directory: full batches with one
+    /// multi-row statement, the remainder row by row. Parameters are bound
+    /// directly (no per-row allocation).
+    fn flush_files(&mut self, parent: NodeId) -> rusqlite::Result<()> {
+        if self.file_batch.is_empty() {
+            return Ok(());
+        }
+        static SQL: std::sync::OnceLock<Vec<(usize, String)>> = std::sync::OnceLock::new();
+        let sqls = SQL.get_or_init(|| {
+            [FILE_BATCH, 16, 4, 1]
+                .iter()
+                .map(|&k| {
+                    let rows = vec!["(?,?,?,?,?,?,?,?,?,?,?,?,?)"; k].join(",");
+                    (k, format!("INSERT INTO files(id,parent,name,ext,kind,size,alloc,mtime,ctime,atime,flags,file_id,nlink) VALUES {rows}"))
+                })
+                .collect()
+        });
+        let batch = std::mem::take(&mut self.file_batch);
+        let rows: &[(nextsize_core::EntryRecord, i64)] = &batch;
+        let mut start = 0;
+        while start < rows.len() {
+            let left = rows.len() - start;
+            let (k, sql) = sqls.iter().find(|(k, _)| *k <= left).expect("size 1 always fits");
+            let group = &rows[start..start + k];
+            start += k;
+            let mut st = self.conn.prepare_cached(sql)?;
+            let mut i = 1;
+            for (e, ext) in group {
+                st.raw_bind_parameter(i, e.id as i64)?;
+                st.raw_bind_parameter(i + 1, parent as i64)?;
+                st.raw_bind_parameter(i + 2, &*e.name)?;
+                st.raw_bind_parameter(i + 3, *ext)?;
+                st.raw_bind_parameter(i + 4, e.kind as u8)?;
+                st.raw_bind_parameter(i + 5, i64s(e.size))?;
+                st.raw_bind_parameter(i + 6, e.alloc.map(i64s))?;
+                st.raw_bind_parameter(i + 7, e.mtime)?;
+                st.raw_bind_parameter(i + 8, e.ctime)?;
+                st.raw_bind_parameter(i + 9, e.atime)?;
+                st.raw_bind_parameter(i + 10, e.flags)?;
+                st.raw_bind_parameter(i + 11, e.file_id.map(|v| v as i64))?;
+                st.raw_bind_parameter(i + 12, e.nlink)?;
+                i += 13;
+            }
+            st.raw_execute()?;
+        }
+        let mut batch = batch;
+        batch.clear();
+        self.file_batch = batch;
         Ok(())
     }
 
@@ -298,22 +409,85 @@ impl IndexWriter {
         self.conn.execute_batch("COMMIT")?;
         self.timings.push(("rollup".into(), t.elapsed().as_millis() as u64));
         self.timed("idx_dirs_tsize", schema::TSIZE_INDEX)?;
-        self.timed(
-            "aggregates",
-            "BEGIN;
-             DELETE FROM ext_stats; DELETE FROM year_stats;
-             INSERT INTO ext_stats SELECT ext, COUNT(*), SUM(size) FROM files GROUP BY ext;
-             INSERT INTO year_stats SELECT CAST(strftime('%Y', mtime, 'unixepoch') AS INTEGER), COUNT(*), SUM(size) FROM files GROUP BY 1;
-             COMMIT;",
-        )?;
-        self.timed("analyze", "ANALYZE")?;
+        if self.aggs_valid {
+            // Computed during ingestion: no extra pass over `files`.
+            let t = Instant::now();
+            self.conn.execute_batch("BEGIN; DELETE FROM ext_stats; DELETE FROM year_stats;")?;
+            {
+                let mut st = self.conn.prepare("INSERT INTO ext_stats(ext,files,size) VALUES(?1,?2,?3)")?;
+                for (ext, (n, s)) in &self.agg_ext {
+                    st.execute(params![ext, n, s])?;
+                }
+                let mut st = self.conn.prepare("INSERT INTO year_stats(year,files,size) VALUES(?1,?2,?3)")?;
+                for (y, (n, s)) in &self.agg_year {
+                    st.execute(params![y, n, s])?;
+                }
+            }
+            self.conn.execute_batch("COMMIT")?;
+            self.timings.push(("aggregates(memory)".into(), t.elapsed().as_millis() as u64));
+        } else {
+            // After a resume the in-memory totals are incomplete: recompute.
+            self.timed(
+                "aggregates(sql)",
+                "BEGIN;
+                 DELETE FROM ext_stats; DELETE FROM year_stats;
+                 INSERT INTO ext_stats SELECT ext, COUNT(*), SUM(size) FROM files GROUP BY ext;
+                 INSERT INTO year_stats SELECT CAST(strftime('%Y', mtime, 'unixepoch') AS INTEGER), COUNT(*), SUM(size) FROM files GROUP BY 1;
+                 COMMIT;",
+            )?;
+        }
+        // Approximate statistics are enough for the query planner and much cheaper.
+        self.timed("analyze", "PRAGMA analysis_limit=1000; ANALYZE;")?;
         Ok(())
+    }
+
+    /// Finalization with temporary resources: parallel sorter threads and a
+    /// larger page cache (restored afterwards).
+    fn finalize_with_resources(&mut self) -> rusqlite::Result<()> {
+        // Diagnostic overrides (benchmarks only; documented in BENCHMARKS.md).
+        let env = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<i64>().ok());
+        let threads = env("NEXTTOOL_FIN_THREADS").unwrap_or(self.finalize_threads as i64);
+        let cache_kib = env("NEXTTOOL_FIN_CACHE_KIB").unwrap_or(self.finalize_cache_kib as i64);
+        self.conn.pragma_update(None, "threads", threads)?;
+        let normal: i64 = self.conn.query_row("PRAGMA cache_size", [], |r| r.get(0))?;
+        self.conn.pragma_update(None, "cache_size", -cache_kib)?;
+        let r = self.finalize();
+        let _ = self.conn.pragma_update(None, "cache_size", normal);
+        let _ = self.conn.pragma_update(None, "threads", 0);
+        r
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn year_of_matches_sqlite() {
+        let c = Connection::open_in_memory().unwrap();
+        for t in [-2_208_988_800i64, -1, 0, 86_399, 951_782_400, 1_582_934_400, 1_609_459_199, 1_609_459_200, 4_102_444_800, 1_798_761_599] {
+            let y: i64 = c.query_row("SELECT CAST(strftime('%Y', ?1, 'unixepoch') AS INTEGER)", [t], |r| r.get(0)).unwrap();
+            assert_eq!(year_of(t), y, "t={t}");
+        }
+    }
+
+    #[test]
+    fn ext_slice_agrees_with_normalize() {
+        for n in ["a.txt", "A.TXT", "x.tar.gz", ".gitignore", "noext", "a.b c", "a.mp4", "r.Jpeg", "z.7z", "a.abcdefghijklmnopq", "ação.pdf"] {
+            if let Some(e) = ext_slice(n) {
+                assert_eq!(Some(e.to_string()), normalize_ext(n), "{n}");
+            }
+        }
     }
 }
 
 impl ScanSink for IndexWriter {
     fn write(&mut self, msg: SinkMsg) -> Result<(), SinkError> {
-        self.write_msg(msg).map_err(sqlite_to_sink)
+        let t = Instant::now();
+        let c0 = self.t_commit;
+        let r = self.write_msg(msg).map_err(sqlite_to_sink);
+        self.t_write += t.elapsed().saturating_sub(self.t_commit - c0);
+        r
     }
 
     fn tick(&mut self) -> Result<(), SinkError> {
@@ -332,10 +506,20 @@ impl ScanSink for IndexWriter {
             self.commit()?;
             let t = Instant::now();
             if o.state.is_terminal_ok() {
-                self.finalize()?;
+                // Durable marker: a crash during finalization leaves the
+                // snapshot resumable (resume re-runs the idempotent finalize).
+                set_meta(&self.conn, "state", nextsize_core::ScanState::Finalizing.as_str())?;
+                self.finalize_with_resources()?;
             }
             let finalize_ms = t.elapsed().as_millis() as u64;
             let timings = serde_json::to_string(&self.timings).unwrap_or_default();
+            let ingest = serde_json::json!({
+                "insert_ms": self.t_write.as_millis() as u64,
+                "commit_ms": self.t_commit.as_millis() as u64,
+                "commits": self.progress.commits.load(Relaxed),
+            })
+            .to_string();
+            set_meta(&self.conn, "ingest_timings", &ingest)?;
             for (k, v) in [
                 ("state", o.state.as_str().to_string()),
                 ("finished_at", now_unix().to_string()),

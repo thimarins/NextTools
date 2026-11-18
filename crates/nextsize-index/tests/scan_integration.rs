@@ -202,6 +202,102 @@ fn cancel_then_resume_gives_exact_totals_without_duplicates() {
     assert!(open_for_resume(&db, 8192, Arc::new(ScanProgress::default())).is_err());
 }
 
+#[test]
+fn in_memory_aggregates_equal_sql_aggregates() {
+    let t = tempfile::tempdir().unwrap();
+    let root = t.path().join("tree");
+    build_tree(&root);
+    let db = t.path().join("a.nxs");
+    let r = scan(&opts(&root, Backend::Native, 64), &db);
+    assert_eq!(r.outcome.state, ScanState::Completed);
+    let c = rusqlite::Connection::open(&db).unwrap();
+    let ext_mem: Vec<(i64, i64, i64)> = c.prepare("SELECT ext, files, size FROM ext_stats ORDER BY ext").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().map(|x| x.unwrap()).collect();
+    let ext_sql: Vec<(i64, i64, i64)> = c.prepare("SELECT ext, COUNT(*), SUM(size) FROM files GROUP BY ext ORDER BY ext").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().map(|x| x.unwrap()).collect();
+    assert_eq!(ext_mem, ext_sql);
+    let y_mem: Vec<(Option<i64>, i64, i64)> = c.prepare("SELECT year, files, size FROM year_stats ORDER BY year").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().map(|x| x.unwrap()).collect();
+    let y_sql: Vec<(Option<i64>, i64, i64)> = c
+        .prepare("SELECT CAST(strftime('%Y', mtime, 'unixepoch') AS INTEGER) y, COUNT(*), SUM(size) FROM files GROUP BY y ORDER BY y")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(|x| x.unwrap())
+        .collect();
+    assert_eq!(y_mem, y_sql);
+}
+
+#[test]
+fn partial_snapshot_is_queryable_and_labeled() {
+    let t = tempfile::tempdir().unwrap();
+    let root = t.path().join("tree");
+    build_tree(&root);
+    let db = t.path().join("p.nxs");
+    let mut o = opts(&root, Backend::Native, 64);
+    o.tuning.threads = 1;
+    let en = make_enumerator(o.backend);
+    let progress = Arc::new(ScanProgress::default());
+    let w = IndexWriter::create(&db, &o, en.name(), progress.clone()).unwrap();
+    let control = Arc::new(ScanControl::new(1));
+    let (c2, p2, o2) = (control.clone(), progress.clone(), o.clone());
+    let h = std::thread::spawn(move || run_scan(&o2, en, Box::new(w), ScanStart::Fresh, c2, p2));
+    while progress.rows_committed.load(Relaxed) < 200 && !h.is_finished() {
+        std::thread::yield_now();
+    }
+    control.cancel();
+    assert_eq!(h.join().unwrap().outcome.state, ScanState::Interrupted);
+
+    let s = Snapshot::open(&db).unwrap();
+    let sum = s.summary().unwrap();
+    assert!(!sum.complete && !sum.finalized);
+    assert!(sum.files > 0, "committed counters visible: {sum:?}");
+    // Every read path works without finalization (table scans, time-limited).
+    assert!(!s.list_dir(1, 0, 50).unwrap().is_empty());
+    assert!(!s.list_subdirs(1, 0, 50).unwrap().is_empty());
+    assert!(!s.top_files(5).unwrap().is_empty());
+    let _ = s.top_dirs(5).unwrap();
+    let q = s.query_files(&FileQuery { ext: Some("txt".into()), limit: 10, ..Default::default() }).unwrap();
+    assert!(q.len() <= 10);
+    let (d, f) = s.child_counts(1).unwrap();
+    assert!(d + f > 0);
+}
+
+#[test]
+fn crash_during_finalization_is_recoverable() {
+    let t = tempfile::tempdir().unwrap();
+    let root = t.path().join("tree");
+    build_tree(&root);
+    let exp = reference_walk(&root);
+    let db = t.path().join("f.nxs");
+    let o = opts(&root, Backend::Native, 64);
+    assert_eq!(scan(&o, &db).outcome.state, ScanState::Completed);
+    // Simulate a crash in the middle of finalization: state marker left as
+    // "finalizing", some indexes missing, roll-up and aggregates half-done.
+    {
+        let c = rusqlite::Connection::open(&db).unwrap();
+        c.execute_batch(
+            "UPDATE meta SET value='finalizing' WHERE key='state';
+             DROP INDEX idx_dirs_tsize; DROP INDEX idx_files_ext;
+             UPDATE dirs SET t_size=NULL, t_files=NULL WHERE depth < 2;
+             DELETE FROM ext_stats; DELETE FROM year_stats;",
+        )
+        .unwrap();
+    }
+    {
+        let s = Snapshot::open(&db).unwrap();
+        assert!(!s.summary().unwrap().complete, "a crashed finalization must not look complete");
+    }
+    let progress = Arc::new(ScanProgress::default());
+    let (w, plan) = open_for_resume(&db, 8192, progress.clone()).unwrap();
+    assert_eq!(plan.pending_dirs, 0, "all directories were already enumerated");
+    let r = run_scan(&o, make_enumerator(o.backend), Box::new(w), ScanStart::Resume { next_id: plan.next_id, pending: plan.pending }, Arc::new(ScanControl::new(2)), progress);
+    assert_eq!(r.outcome.state, ScanState::Completed, "{r:?}");
+    let s = Snapshot::open(&db).unwrap();
+    assert!(s.verify().unwrap().is_empty(), "{:?}", s.verify());
+    let sum = s.summary().unwrap();
+    assert!(sum.complete && sum.finalized);
+    assert_eq!((sum.files, sum.bytes), (exp.files, exp.bytes));
+    assert_eq!(s.ext_stats(100).unwrap().iter().map(|e| e.files).sum::<u64>(), exp.files);
+}
+
 #[cfg(windows)]
 #[test]
 fn junction_loop_is_not_followed_and_access_denied_is_reported() {

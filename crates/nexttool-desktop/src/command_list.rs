@@ -1,0 +1,26 @@
+/// Every IPC command exposed to the webview. Shared by build.rs (permission
+/// generation) and a test that keeps it in sync with capabilities.
+pub const COMMANDS: &[&str] = &[
+    "app_info",
+    "app_quit",
+    "overview",
+    "tasks_list",
+    "task_get",
+    "task_pause",
+    "task_resume",
+    "task_cancel",
+    "size_scan_submit",
+    "snapshot_summary",
+    "snapshot_list_dir",
+    "snapshot_top_files",
+    "snapshot_top_dirs",
+    "snapshot_query",
+    "snapshot_cancel_query",
+    "snapshot_stats",
+    "copy_plan",
+    "copy_submit",
+    "alerts_list",
+    "alerts_ack",
+    "settings_get",
+    "settings_set",
+];

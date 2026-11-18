@@ -199,13 +199,22 @@ impl TaskManager {
         self.running.lock().unwrap_or_else(|p| p.into_inner()).keys().copied().collect()
     }
 
-    /// One scheduling pass. Returns the tasks started.
+    /// One scheduling pass over all queued tasks. Returns the tasks started.
     pub fn tick(&self) -> Result<Vec<TaskId>, StoreError> {
+        self.tick_only(None)
+    }
+
+    /// Scheduling pass restricted to `only` (the CLI runs just its own tasks,
+    /// so tasks queued by the desktop app are never orphaned by a short CLI run).
+    pub fn tick_only(&self, only: Option<&[TaskId]>) -> Result<Vec<TaskId>, StoreError> {
         self.reap();
         self.store().release_due_retries(now_unix())?;
         let mut started = Vec::new();
         let queued = self.store().queued(100)?;
         for t in queued {
+            if only.is_some_and(|ids| !ids.contains(&t.id)) {
+                continue;
+            }
             let mut running = self.running.lock().unwrap_or_else(|p| p.into_inner());
             if running.len() >= self.max_running {
                 break;
@@ -215,10 +224,9 @@ impl TaskManager {
                 continue; // competing for the same volume/share: wait
             }
             let control = Arc::new(TaskControl::default());
-            {
-                let s = self.store();
-                s.claim(t.id, std::process::id(), nexttool_core::process::current_start())?;
-                s.set_state(t.id, TaskState::Running, None)?;
+            // Atomic: if another process (CLI or desktop) got it first, skip.
+            if !self.store().try_claim(t.id, std::process::id(), nexttool_core::process::current_start())? {
+                continue;
             }
             let handle = self.spawn(t.clone(), control.clone());
             running.insert(t.id, Running { control, keys: t.resource_keys.clone(), handle: Some(handle) });
@@ -275,7 +283,7 @@ impl TaskManager {
     /// Used by the CLI; the desktop runs `tick` from its own loop.
     pub fn run_until_done(&self, ids: &[TaskId], on_tick: &mut dyn FnMut(&[TaskRecord])) -> Result<Vec<TaskRecord>, StoreError> {
         loop {
-            self.tick()?;
+            self.tick_only(Some(ids))?;
             let recs: Vec<TaskRecord> = ids.iter().map(|id| self.store().get_task(*id)).collect::<Result<_, _>>()?;
             on_tick(&recs);
             let running = self.running_ids();
@@ -432,6 +440,42 @@ mod tests {
         assert_eq!(r[0].attempt, 1);
         assert_eq!(r[1].state, TaskState::Failed);
         assert_eq!(r[1].error_kind.as_deref(), Some("internal"));
+    }
+
+    #[test]
+    fn two_schedulers_never_run_the_same_task() {
+        let f: RunnerFactory = Arc::new(|_| Ok(Box::new(Fake { outcome: RunOutcome { state: TaskState::Completed, error: None, result_json: None, target: String::new() }, sleep_ms: 300 })));
+        let t = tempfile::tempdir().unwrap();
+        let db = t.path().join("app.db");
+        let m1 = TaskManager::new(AppStore::open(&db).unwrap().0, t.path().to_path_buf(), f.clone(), 4);
+        let m2 = TaskManager::new(AppStore::open(&db).unwrap().0, t.path().to_path_buf(), f, 4);
+        let ids: Vec<_> = (0..6).map(|i| m1.submit(task(&[&format!("k{i}")])).unwrap()).collect();
+        let (a, b) = std::thread::scope(|s| {
+            let h1 = s.spawn(|| m1.tick().unwrap());
+            let h2 = s.spawn(|| m2.tick().unwrap());
+            (h1.join().unwrap(), h2.join().unwrap())
+        });
+        assert!(a.iter().all(|id| !b.contains(id)), "a={a:?} b={b:?}");
+        assert!(a.len() + b.len() >= 4, "both schedulers together should start at least 4: a={a:?} b={b:?}");
+        let mut all: Vec<_> = a.iter().chain(&b).copied().collect();
+        all.sort();
+        all.dedup();
+        assert_eq!(all.len(), a.len() + b.len());
+        let _ = m1.run_until_done(&ids, &mut |_| {});
+        let _ = m2.run_until_done(&ids, &mut |_| {});
+        for id in ids {
+            assert_eq!(m1.store().get_task(id).unwrap().attempt, 1, "task {id} ran more than once");
+        }
+    }
+
+    #[test]
+    fn tick_only_ignores_other_tasks() {
+        let f: RunnerFactory = Arc::new(|_| Ok(Box::new(Fake { outcome: RunOutcome { state: TaskState::Completed, error: None, result_json: None, target: String::new() }, sleep_ms: 0 })));
+        let (_t, m) = mgr(f, 4);
+        let a = m.submit(task(&["a"])).unwrap();
+        let b = m.submit(task(&["b"])).unwrap();
+        assert_eq!(m.tick_only(Some(&[b])).unwrap(), vec![b]);
+        assert_eq!(m.store().get_task(a).unwrap().state, TaskState::Queued);
     }
 
     #[test]

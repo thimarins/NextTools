@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-snapshot-top-dirs"
+description = "Enables the snapshot_top_dirs command without any pre-configured scope."
+commands.allow = ["snapshot_top_dirs"]
+
+[[permission]]
+identifier = "deny-snapshot-top-dirs"
+description = "Denies the snapshot_top_dirs command without any pre-configured scope."
+commands.deny = ["snapshot_top_dirs"]

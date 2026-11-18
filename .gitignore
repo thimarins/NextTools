@@ -3,3 +3,6 @@
 *.nxs-wal
 *.nxs-shm
 /bench-data
+/ui/node_modules
+/ui/dist
+/crates/nexttool-desktop/gen

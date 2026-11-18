@@ -1,4 +1,4 @@
-[package]
+﻿[package]
 name = "nexttool-cli"
 description = "NextTool CLI: NextSize e NextCopy sem interface, scripts, benchmarks e gerador de massa de teste"
 version.workspace = true
@@ -6,7 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "nexttool"
+name = "nexttool-cli"
 path = "src/main.rs"
 
 [dependencies]

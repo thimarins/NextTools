@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-copy-submit"
+description = "Enables the copy_submit command without any pre-configured scope."
+commands.allow = ["copy_submit"]
+
+[[permission]]
+identifier = "deny-copy-submit"
+description = "Denies the copy_submit command without any pre-configured scope."
+commands.deny = ["copy_submit"]

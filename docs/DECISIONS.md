@@ -89,4 +89,41 @@ Ver [DISTRIBUTION.md](DISTRIBUTION.md). Standard usa o WebView2 *Evergreen* inst
 | `clap`, `ctrlc` | CLI | — |
 | `tempfile` (dev) | testes | — |
 
+**Fase 1 (desktop):** `tauri` 2.x (estável; a 3.0 ainda é alpha e foi descartada), `tauri-build`, `tauri-plugin-dialog` (seletor nativo de pasta/arquivo), `tauri-plugin-single-instance` (ADR-020). UI: React 19, Vite 8, TypeScript **5.9** (a 7.0, com o novo compilador nativo, fica para depois), Tailwind 4, Radix (dialog, tooltip, tabs, switch), `lucide-react`, TanStack Table **8** e Virtual 3, `sonner` (notificações), `clsx` + `tailwind-merge` + `class-variance-authority` (padrão shadcn/ui).
+
 **Não adicionados (ainda):** `tokio` (no Tauri, na Fase 1), `rayon` (não houve agregação na CPU que justificasse), `zstd` (exportação de snapshot, Fase 2), `windows-rs` (o `windows-sys` basta). Auditoria `cargo audit` e `cargo deny` na Fase 6.
+
+---
+
+## Fase 1 — desktop
+
+### ADR-018 — IPC com allowlist explícita
+**Contexto:** a especificação pede IPC com comandos e permissões restritos.
+**Decisão:** o `build.rs` registra cada comando no *app manifest* do Tauri (`AppManifest::commands`). Com isso, cada comando vira uma permissão `allow-<comando>` que precisa constar em `capabilities/default.json`. A capability concede apenas: os 22 comandos do NextTool, eventos, janela e o diálogo de abrir/salvar. Não há plugin de shell, de sistema de arquivos ou HTTP. A CSP restringe tudo a `'self'` + `ipc:`, e `freezePrototype` está ativo. O teste `command_list_matches_capability` falha se um comando existir sem permissão ou se uma permissão existir sem comando.
+**Consequências:** um comando novo exige uma mudança explícita em três lugares (lista, handler e capability), verificada por teste.
+
+### ADR-019 — Nomes dos executáveis
+**Contexto:** `nexttool.exe` (CLI) e `NextTool.exe` (desktop) são **o mesmo arquivo** no Windows, que não diferencia maiúsculas. O build do desktop sobrescreveu a CLI, e isso foi encontrado durante os testes da Fase 1.
+**Decisão:** o desktop é `NextTool.exe`; a CLI passa a ser `nexttool-cli.exe`.
+
+### ADR-020 — Instância única e reivindicação atômica de tarefas
+**Contexto:** duas instâncias do app, ou o app junto com a CLI, poderiam executar o mesmo agendador sobre o mesmo `app.db`.
+**Decisão:**
+- O app usa `tauri-plugin-single-instance`: uma segunda abertura apenas foca a janela existente.
+- Toda execução de tarefa começa com `UPDATE … SET state='running' WHERE id=? AND state='queued'` (`try_claim`). Só quem altera a linha executa.
+- A CLI agenda **somente as próprias tarefas** (`tick_only`), então uma execução curta da CLI nunca deixa órfãs tarefas criadas pelo app.
+
+Teste: `two_schedulers_never_run_the_same_task`.
+
+### ADR-021 — Entradas da UI não são normalizadas
+**Decisão:** caminhos vindos da UI precisam chegar absolutos e sem `.`/`..`. Eles não são resolvidos contra o diretório de trabalho do processo, o que esconderia *traversal*. Caminhos de snapshot precisam ter extensão `.nxs` e existir. Configurações passam pela allowlist `nexttool_store::SETTINGS`, a mesma usada pela CLI.
+
+### ADR-022 — UI: tema, offline e pré-visualização sem dados simulados
+**Decisão:**
+- Tokens de cor em OKLCH com matiz configurável (`--hue`); claro, escuro e automático; densidade e escala de fonte via variáveis CSS.
+- Fontes do sistema (Segoe UI Variable / Cascadia), sem fontes remotas, porque o app funciona offline.
+- Fora do app desktop (navegador), a API devolve `desktop_only` e a UI mostra uma faixa de aviso. **Nenhum dado é simulado.**
+- Sem porcentagem falsa: o progresso é indeterminado e mostra contadores reais enquanto o total é desconhecido.
+
+### ADR-023 — Fechar com tarefas em execução
+**Decisão:** o fechamento da janela é interceptado. Se há tarefas em execução, a UI pede confirmação; ao confirmar, as tarefas são **pausadas com segurança** (`TaskManager::shutdown`) antes de sair, e ficam retomáveis. Sem tarefas, fecha normalmente.

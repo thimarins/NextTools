@@ -291,6 +291,22 @@ impl AppStore {
         Ok(())
     }
 
+    /// Atomically moves a *queued* task to running and records the owner.
+    /// Returns false if another scheduler (another process) claimed it first.
+    pub fn try_claim(&self, id: TaskId, pid: u32, start: Option<u64>) -> Result<bool, StoreError> {
+        let now = now_unix();
+        let n = self.conn.execute(
+            "UPDATE tasks SET state='running', owner_pid=?2, owner_start=?3, attempt=attempt+1, updated_at=?4,
+                    started_at=COALESCE(started_at, ?4), error_kind=NULL, error_message=NULL
+             WHERE id=?1 AND state='queued'",
+            params![id, pid, start.map(|v| v as i64), now],
+        )?;
+        if n == 1 {
+            self.add_event(id, "info", "estado: running")?;
+        }
+        Ok(n == 1)
+    }
+
     pub fn claim(&self, id: TaskId, pid: u32, start: Option<u64>) -> Result<(), StoreError> {
         self.conn.execute(
             "UPDATE tasks SET owner_pid=?2, owner_start=?3, attempt=attempt+1, updated_at=?4 WHERE id=?1",

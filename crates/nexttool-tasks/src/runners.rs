@@ -295,9 +295,12 @@ impl TaskRunner for CopyRunner {
                 }
                 CopyOutcome::PartialFailure | CopyOutcome::Failed => {
                     let kind = result.dominant_error.unwrap_or(ErrorKind::Io);
+                    let codes: Vec<String> = result.exit_codes.iter().map(|c| c.map_or("encerrado".into(), |v| v.to_string())).collect();
                     let msg = format!(
-                        "robocopy: {} arquivos com falha, {} diretórios com falha (códigos {:?})",
-                        result.stats.files_failed, result.stats.dirs_failed, result.exit_codes
+                        "Robocopy: {} arquivo(s) e {} pasta(s) com falha (código de saída {})",
+                        result.stats.files_failed,
+                        result.stats.dirs_failed,
+                        codes.join(", ")
                     );
                     (TaskState::Failed, Some((kind, msg)))
                 }

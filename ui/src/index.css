@@ -1,0 +1,136 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Design tokens. --hue is the user's accent color (Settings). */
+:root {
+  --hue: 255;
+  --radius: 0.625rem;
+
+  --background: oklch(0.985 0.003 260);
+  --foreground: oklch(0.22 0.02 260);
+  --card: oklch(1 0 0);
+  --card-foreground: var(--foreground);
+  --muted: oklch(0.965 0.005 260);
+  --muted-foreground: oklch(0.5 0.02 260);
+  --border: oklch(0.915 0.007 260);
+  --input: oklch(0.89 0.008 260);
+  --primary: oklch(0.55 0.19 var(--hue));
+  --primary-foreground: oklch(0.99 0.005 var(--hue));
+  --accent: oklch(0.955 0.025 var(--hue));
+  --accent-foreground: oklch(0.38 0.13 var(--hue));
+  --ring: oklch(0.6 0.18 var(--hue) / 0.55);
+  --destructive: oklch(0.57 0.21 27);
+  --warning: oklch(0.7 0.15 65);
+  --success: oklch(0.58 0.14 150);
+  --info: oklch(0.58 0.13 240);
+
+  --control-h: 2.25rem;
+  --card-pad: 1.25rem;
+  --row-h: 2.75rem;
+  color-scheme: light;
+}
+
+.dark {
+  --background: oklch(0.165 0.012 260);
+  --foreground: oklch(0.95 0.006 260);
+  --card: oklch(0.205 0.014 260);
+  --muted: oklch(0.245 0.014 260);
+  --muted-foreground: oklch(0.7 0.016 260);
+  --border: oklch(0.3 0.014 260);
+  --input: oklch(0.34 0.016 260);
+  --primary: oklch(0.7 0.16 var(--hue));
+  --primary-foreground: oklch(0.17 0.03 var(--hue));
+  --accent: oklch(0.29 0.045 var(--hue));
+  --accent-foreground: oklch(0.9 0.06 var(--hue));
+  --ring: oklch(0.72 0.15 var(--hue) / 0.6);
+  --destructive: oklch(0.66 0.19 25);
+  --warning: oklch(0.78 0.14 70);
+  --success: oklch(0.7 0.14 150);
+  --info: oklch(0.7 0.12 240);
+  color-scheme: dark;
+}
+
+[data-density="compact"] {
+  --control-h: 1.95rem;
+  --card-pad: 0.875rem;
+  --row-h: 2.2rem;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-ring: var(--ring);
+  --color-destructive: var(--destructive);
+  --color-warning: var(--warning);
+  --color-success: var(--success);
+  --color-info: var(--info);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --font-sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "Cascadia Mono", "Consolas", ui-monospace, monospace;
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    font-feature-settings: "tnum" 1;
+  }
+  ::selection {
+    background: oklch(from var(--primary) l c h / 0.25);
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 999px;
+    border: 2px solid var(--background);
+  }
+}
+
+@keyframes indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}

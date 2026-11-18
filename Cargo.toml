@@ -11,7 +11,7 @@ members = [
     "crates/nextcopy-robocopy",
     "crates/nextcopy-verify",
     "crates/nexttool-cli",
-    # "crates/nexttool-desktop"  -> Fase 1 (Tauri 2 + React), após validação dos motores
+    "crates/nexttool-desktop",
 ]
 
 [workspace.package]

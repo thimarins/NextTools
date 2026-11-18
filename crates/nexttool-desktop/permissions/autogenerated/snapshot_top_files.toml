@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-snapshot-top-files"
+description = "Enables the snapshot_top_files command without any pre-configured scope."
+commands.allow = ["snapshot_top_files"]
+
+[[permission]]
+identifier = "deny-snapshot-top-files"
+description = "Denies the snapshot_top_files command without any pre-configured scope."
+commands.deny = ["snapshot_top_files"]

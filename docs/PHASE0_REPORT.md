@@ -26,7 +26,7 @@ Data: 2026-11-17 · Commit base: `834fff9` (checkpoint NextSize) → Fase 0
 | `nextcopy-core` | `CopyJob`, 7 perfis, políticas de sobrescrita, filtros, validação (anti-injeção de opções), contrato `CopyEngine` |
 | `nextcopy-robocopy` | Robocopy por caminho absoluto e argumentos estruturados; interpretação independente de idioma (bitmask, resumo por posição, códigos `0x`); prévia, aprovação e reverificação de espelhamento; pausa/retomada; seleção individual limitada; contadores de I/O do processo |
 | `nextcopy-verify` | verificação padrão e rigorosa (BLAKE3), respeitando filtros e política de sobrescrita, sem abrir arquivos em nuvem |
-| `nexttool-cli` | `nexttool size …`, `copy …`, `tasks …`, `alerts …`, `sys`; benchmark e gerador de massa de teste |
+| `nexttool-cli` | `nexttool-cli size …`, `copy …`, `tasks …`, `alerts …`, `sys`; benchmark e gerador de massa de teste |
 
 **Documentação:** [ARCHITECTURE](ARCHITECTURE.md) (pipeline, persistência para 100 M e 1 B, retomada, particionamento, contratos de IPC, erros, segurança, métricas) · [DECISIONS](DECISIONS.md) (17 ADRs) · [TEST_PLAN](TEST_PLAN.md) · [BENCHMARKS](BENCHMARKS.md) · [DISTRIBUTION](DISTRIBUTION.md) (Standard × Offline/Portable, WebView2) · [KNOWN_ISSUES](KNOWN_ISSUES.md)
 

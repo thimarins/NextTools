@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-snapshot-cancel-query"
+description = "Enables the snapshot_cancel_query command without any pre-configured scope."
+commands.allow = ["snapshot_cancel_query"]
+
+[[permission]]
+identifier = "deny-snapshot-cancel-query"
+description = "Denies the snapshot_cancel_query command without any pre-configured scope."
+commands.deny = ["snapshot_cancel_query"]

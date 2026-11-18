@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-snapshot-summary"
+description = "Enables the snapshot_summary command without any pre-configured scope."
+commands.allow = ["snapshot_summary"]
+
+[[permission]]
+identifier = "deny-snapshot-summary"
+description = "Denies the snapshot_summary command without any pre-configured scope."
+commands.deny = ["snapshot_summary"]

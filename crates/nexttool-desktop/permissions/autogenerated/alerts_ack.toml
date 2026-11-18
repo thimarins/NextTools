@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-alerts-ack"
+description = "Enables the alerts_ack command without any pre-configured scope."
+commands.allow = ["alerts_ack"]
+
+[[permission]]
+identifier = "deny-alerts-ack"
+description = "Denies the alerts_ack command without any pre-configured scope."
+commands.deny = ["alerts_ack"]

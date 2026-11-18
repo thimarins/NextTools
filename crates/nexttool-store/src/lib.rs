@@ -5,9 +5,11 @@
 //! files); the store only keeps references to them.
 
 mod logs;
+mod settings;
 mod store;
 
 pub use logs::{init_logging, RotatingFile};
+pub use settings::{validate_setting, SettingError, SETTINGS};
 pub use store::{AppStore, NewTask, RecoveredTask, StoreError, TaskRecord};
 
 use std::path::PathBuf;

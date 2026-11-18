@@ -1,6 +1,6 @@
 # NextTool — Arquitetura
 
-Versão do documento: Fase 0 (2026-11-17). Estado: os motores e a infraestrutura compartilhada estão implementados e testados. A interface desktop (Tauri) começa na Fase 1.
+Versão do documento: Fase 1 (2026-11-18). Estado: os motores, a infraestrutura compartilhada e a fundação desktop (Tauri + React) estão implementados e testados.
 
 Documentos relacionados: [DECISIONS.md](DECISIONS.md) (ADRs) · [TEST_PLAN.md](TEST_PLAN.md) · [BENCHMARKS.md](BENCHMARKS.md) · [DISTRIBUTION.md](DISTRIBUTION.md) · [KNOWN_ISSUES.md](KNOWN_ISSUES.md) · [PHASE0_REPORT.md](PHASE0_REPORT.md)
 
@@ -35,7 +35,7 @@ Os dois módulos compartilham um núcleo pequeno: erros, enumeração de diretó
                                                   erros · fs · tarefa · alerta · segurança · processo
 ```
 
-### 1.1 Crates (10 hoje + desktop na Fase 1)
+### 1.1 Crates (11)
 
 | Crate | Responsabilidade | Depende de |
 |---|---|---|
@@ -49,7 +49,7 @@ Os dois módulos compartilham um núcleo pequeno: erros, enumeração de diretó
 | `nextcopy-robocopy` | Motor v1: `Robocopy.exe` como processo filho, argumentos estruturados, log interpretado sem depender do idioma, código de saída como bitmask, prévia (dry-run) e aprovação de espelhamento | nextcopy-core |
 | `nextcopy-verify` | Verificação padrão (existência, tamanho, data) e rigorosa (BLAKE3 completo) | nextcopy-core, core |
 | `nexttool-cli` | Binário `nexttool`: os mesmos motores e o mesmo `TaskManager` do desktop, mais benchmarks e gerador de massa de teste | todos |
-| `nexttool-desktop` | **Fase 1**: Tauri 2 + React + TS + Tailwind + shadcn/ui + lucide | tasks, store, index (leitura) |
+| `nexttool-desktop` | App Tauri 2 (`NextTool.exe`): IPC com allowlist, laço de eventos e agendador, instância única, fechamento seguro. A UI fica em `/ui` (React 19 + TS + Tailwind 4 + componentes estilo shadcn/ui + lucide + TanStack) | tasks, store, index, robocopy |
 
 Regras verificadas: não há dependência circular (o Cargo recusaria) e NextSize ↔ NextCopy não se referenciam. A única dependência entre os motores e a orquestração é **tasks → motores**; os motores não conhecem tarefas.
 
@@ -305,46 +305,54 @@ Códigos de saída da CLI: 0 ok · 1 concluído com avisos · 2 falhou · 3 inte
 
 ---
 
-## 6. Contratos de IPC (Tauri — implementação na Fase 1)
+## 6. Contratos de IPC (Tauri 2 — implementados na Fase 1)
+
+Código: `crates/nexttool-desktop/src/ipc.rs` (lógica testável, sem Tauri) e `commands.rs` (wrappers). Tipos TypeScript espelhados em `ui/src/lib/types.ts`.
 
 Princípios:
-- O frontend **nunca** recebe índices completos, apenas páginas (≤ 10.000 linhas, padrão 100).
-- Cada requisição carrega um `request_id`, e respostas antigas são descartadas pelo frontend (sequência por *view*).
-- Progresso chega por eventos com frequência limitada (≤ 4 Hz por tarefa).
-- Comandos com allowlist explícita na configuração do Tauri (`capabilities`), sem acesso genérico ao sistema de arquivos pelo webview.
+- O frontend **nunca** recebe índices completos, apenas páginas. Toda lista é limitada a ≤ 1.000 linhas (padrão 100).
+- Cada consulta de snapshot carrega um `request_id` que volta na resposta. A UI descarta respostas obsoletas, e `snapshot_cancel_query` cancela pelo id. Uma nova consulta com o mesmo id cancela a anterior.
+- Trabalho pesado roda em `spawn_blocking`; o webview nunca espera por disco ou SQLite.
+- Erros chegam como `{ code, message }`. Códigos estáveis: `invalid_path`, `not_found`, `invalid_argument`, `invalid_job`, `invalid_state`, `approval_required`, `cancelled`, `time_limit`, `not_finalized`, `store`, `snapshot`, `engine`, `internal`, `unsupported`.
+- **Allowlist (ADR-018):** cada comando é uma permissão explícita na capability. Não há acesso genérico a arquivos, shell ou rede no webview.
 
-### Comandos
+### Comandos (22)
 
 | Comando | Entrada | Saída |
 |---|---|---|
-| `tasks.submit` | `TaskSpec` (JSON validado no Rust) | `{ task_id }` |
-| `tasks.list` | `{ states?, limit, offset }` | `TaskRecord[]` (página) |
-| `tasks.get` | `{ task_id }` | `TaskRecord` + últimos eventos |
-| `tasks.pause` / `tasks.resume` / `tasks.cancel` | `{ task_id }` | `{ ok }` |
-| `size.snapshot.summary` | `{ snapshot_path }` | `Summary` |
-| `size.snapshot.list_dir` | `{ snapshot, dir_id, offset, limit, request_id }` | `{ request_id, rows: DirRow[] }` |
-| `size.snapshot.top_files` / `top_dirs` | `{ snapshot, limit }` | `FileRow[]` / `DirRow[]` |
-| `size.snapshot.query` | `{ snapshot, FileQuery, request_id }` | `{ request_id, rows, elapsed_ms }` ou `{ error: cancelled\|time_limit }` |
-| `size.snapshot.cancel_query` | `{ request_id }` | `{ ok }` |
-| `size.snapshot.stats` | `{ snapshot }` | `{ extensions, years }` |
-| `size.snapshot.treemap` (Fase 4) | `{ snapshot, dir_id, width, height, max_rects }` | retângulos agregados (≤ max_rects, o resto vira "Outros") |
-| `copy.plan` | `CopyJob` | `DryRunReport` |
-| `copy.from_selection` (Fase 4) | `{ snapshot, dir_ids[] ou query, dest }` | `CopyJob` revalidado contra o disco atual |
-| `alerts.list` / `alerts.ack` | `{ include_ack, limit }` / `{ id }` | `Alert[]` / `{ ok }` |
-| `settings.get` / `settings.set` | chave/valor (allowlist) | valor |
+| `app_info` | — | versão, diretório de dados, portátil?, caminho do Robocopy |
+| `app_quit` | — | pausa as tarefas com segurança e encerra (ADR-023) |
+| `overview` | — | ativas, falhas recentes, últimas análises e cópias, alertas abertos |
+| `tasks_list` | `states?`, `limit`, `offset` | `TaskRecord[]` (página) |
+| `task_get` | `id` | `TaskRecord` + 200 eventos mais recentes |
+| `task_pause` / `task_resume` / `task_cancel` | `id` | `bool` / — / `bool` (retomar só a partir de pausada, interrompida ou falha) |
+| `size_scan_submit` | `{ root, profile, snapshot? }` | `task_id` (snapshot padrão em `<dados>\snapshots\`) |
+| `snapshot_summary` | `path` (.nxs) | `Summary` (lê só o `meta`; ~2 ms) |
+| `snapshot_list_dir` | `path, dirId, offset, limit, requestId` | `{ request_id, rows: DirRow[], elapsed_ms }` |
+| `snapshot_top_files` / `snapshot_top_dirs` | `path, limit` | `FileRow[]` / `DirRow[]` |
+| `snapshot_query` | `path, query: { min_size, max_size, ext, modified_before/after, year, name_contains, offset, limit }, requestId` | `{ request_id, rows, elapsed_ms }`; tempo limite de 30 s |
+| `snapshot_cancel_query` | `requestId` | `bool` |
+| `snapshot_stats` | `path` | `{ extensions[30], years[] }` |
+| `copy_plan` | `CopyRequest` | `DryRunReport` (Robocopy `/L`, nada é alterado) |
+| `copy_submit` | `CopyRequest` (+ `approved_deletions` obrigatório no espelhamento) | `task_id` |
+| `alerts_list` / `alerts_ack` | `includeAcknowledged, limit` / `id` | `Alert[]` / `bool` |
+| `settings_get` / `settings_set` | — / `key, value` (allowlist) | mapa / — |
+
+`CopyRequest = { source, dest, profile, threads?, verify?, exclude_files[], exclude_dirs[], approved_deletions? }`. O `CopyJob` completo é montado e validado no Rust a partir do perfil; a UI não define opções internas.
 
 ### Eventos (Rust → UI)
 
+Enviados pelo laço `pump` (250 ms), que também executa o agendador:
+
 | Evento | Carga | Frequência |
 |---|---|---|
-| `task.progress` | `{ task_id, progress_json }` | ≤ 4 Hz |
-| `task.state` | `{ task_id, state, error? }` | a cada transição |
-| `alert.raised` | `{ alert_id, grouped }` | a cada novo alerta ou agrupamento |
+| `task://update` | `TaskRecord` | a cada mudança de estado ou progresso, ≤ 4 Hz por tarefa, mais um evento final ao sair do conjunto ativo |
+| `alert://raised` | `Alert` | novo alerta ou incremento de agrupamento (a UI notifica só a 1ª ocorrência) |
+| `app://close-requested` | nº de tarefas em execução | ao fechar a janela com tarefas ativas |
 
-**Seleção NextSize → NextCopy (Fase 4):** a seleção trafega como **referência** (`snapshot + dir_ids` ou `snapshot + FileQuery`), nunca como lista de caminhos. Antes de criar a tarefa, o Rust revalida contra o disco atual se o snapshot não é de agora. Pastas e filtros viram um `CopyJob` de diretório; arquivos individuais seguem o limite do ADR-012.
+**Seleção NextSize → NextCopy (Fase 4):** a seleção trafegará como **referência** (`snapshot + dir_ids` ou `snapshot + FileQuery`), nunca como lista de caminhos. O Rust revalida contra o disco atual antes de criar a tarefa.
 
 ---
-
 ## 7. Segurança
 
 - **NextSize somente leitura:** os enumeradores só listam. Nenhum `open` de conteúdo, nenhuma alteração de atributo ou timestamp (`FindFirstFileExW` não altera o atime).
@@ -360,7 +368,7 @@ Princípios:
 
 ## 8. Métricas de benchmark
 
-Coletadas pelo `nexttool size bench` (JSON por linha):
+Coletadas pelo `nexttool-cli size bench` (JSON por linha):
 
 | Métrica | Fonte |
 |---|---|

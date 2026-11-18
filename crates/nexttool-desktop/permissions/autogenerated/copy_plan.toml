@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-copy-plan"
+description = "Enables the copy_plan command without any pre-configured scope."
+commands.allow = ["copy_plan"]
+
+[[permission]]
+identifier = "deny-copy-plan"
+description = "Denies the copy_plan command without any pre-configured scope."
+commands.deny = ["copy_plan"]

@@ -1,6 +1,6 @@
 # Distribuição e runtime WebView2
 
-Status: **planejado** (empacotamento na Fase 6; a casca Tauri começa na Fase 1). Nada aqui foi medido ainda. Os números marcados como *estimativa* serão substituídos por medições reais.
+Status: o app desktop existe e foi medido (Fase 1). O empacotamento (MSI/NSIS/ZIP) é da Fase 6; os itens marcados como *estimativa* ainda não foram medidos.
 
 ## 1. Duas distribuições
 
@@ -50,3 +50,18 @@ Para cada sistema disponível (2016, 2019, 2022, 2025, 10, 11), em VM limpa:
 4. Registrar build do SO, versão do WebView2, resultado e problemas em `docs/COMPAT.md`.
 
 **Preciso que os sistemas (VMs ou servidores) sejam disponibilizados para executar este plano.**
+
+## 5. Medições reais (Fase 1, Windows 11, WebView2 158.0.4370.26 Evergreen)
+
+| Item | Valor medido |
+|---|---|
+| `NextTool.exe` (release, UI embutida, com tabelas de linha para diagnóstico) | 13,2 MB |
+| `nexttool-cli.exe` | 5,0 MB |
+| UI empacotada (`ui/dist`) | 572 KB (JS 535 KB, 165 KB gzip) |
+| Tempo até a janela aparecer | 192 ms (cache quente) |
+| Memória do processo `NextTool.exe` (ocioso) | 29 MB working set / 5,7 MB privado |
+| Memória dos processos WebView2 (6 processos) | 359 MB working set somados (inclui páginas compartilhadas) / **164 MB privados** |
+
+**Conclusão:** o custo de memória da interface é dominado pelo WebView2 (cerca de 160 MB privados), e não pelo NextTool. Em servidores com pouca RAM, a recomendação é a CLI (`nexttool-cli.exe`, sem WebView2) ou fechar a janela enquanto as tarefas não precisam dela. A redução do custo do WebView2 (por exemplo, desativar a GPU) será avaliada na Fase 6.
+
+**Modo portátil validado:** com `portable.flag` ao lado do exe, o app e a CLI usam `.\data\` (verificado: tarefas criadas pela CLI aparecem no app e vice-versa; a tela "Sobre" mostra "versão portátil").

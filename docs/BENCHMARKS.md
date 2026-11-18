@@ -21,7 +21,7 @@ Data: 2026-11-17. Dados brutos: [`benchmarks/results-2026-11-17.jsonl`](../bench
 
 | Conjunto | Arquivos | Diretórios | Bytes | Origem |
 |---|---|---|---|---|
-| synthetic-100k | 100.000 | 3.992 | 25,6 MB | `nexttool size gen` (≤ 512 B/arquivo, residente na MFT) |
+| synthetic-100k | 100.000 | 3.992 | 25,6 MB | `nexttool-cli size gen` (≤ 512 B/arquivo, residente na MFT) |
 | synthetic-1M | 1.000.000 | 39.992 | 256,0 MB | idem (geração: 477 s) |
 | real-C-drive | ≈ 2.607.000 | 339.532 | ≈ 372 GB | volume de sistema **real**, em uso (os números variam alguns arquivos entre execuções) |
 
@@ -86,7 +86,7 @@ A meta de "visão inicial em menos de 1 s" é atendida com folga: cerca de 2 ms,
 
 ## 5. Recuperação após encerramento forçado
 
-O processo `nexttool size scan` foi encerrado com `Stop-Process -Force` (equivalente a um crash) durante a varredura do synthetic-1M, perfil Econômico.
+O processo `nexttool-cli size scan` foi encerrado com `Stop-Process -Force` (equivalente a um crash) durante a varredura do synthetic-1M, perfil Econômico.
 
 | Etapa | Resultado |
 |---|---|

@@ -30,7 +30,7 @@ const EXIT_INTERRUPTED: i32 = 3;
 const EXIT_USAGE: i32 = 64;
 
 #[derive(Parser)]
-#[command(name = "nexttool", version, about = "NextTool — NextSize (análise) e NextCopy (cópia)")]
+#[command(name = "nexttool-cli", version, about = "NextTool — NextSize (análise) e NextCopy (cópia)")]
 struct Cli {
     /// Diretório de dados (padrão: %LOCALAPPDATA%\NextTool, ou .\data no modo portátil)
     #[arg(long, global = true)]
@@ -56,8 +56,17 @@ enum Cmd {
     /// Central de alertas
     #[command(subcommand)]
     Alerts(AlertsCmd),
+    /// Configurações do aplicativo (as mesmas da tela Configurações)
+    #[command(subcommand)]
+    Settings(SettingsCmd),
     /// Recursos do processo (diagnóstico)
     Sys,
+}
+
+#[derive(Subcommand)]
+enum SettingsCmd {
+    List,
+    Set { key: String, value: String },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -304,7 +313,7 @@ fn open_store(data_dir: &Path) -> Result<AppStore, String> {
         Ok(list) => {
             for r in list.iter().filter(|r| !r.owned_by_live_process) {
                 eprintln!(
-                    "tarefa {} \"{}\" foi interrompida inesperadamente{} — use `nexttool tasks resume {}` para retomar",
+                    "tarefa {} \"{}\" foi interrompida inesperadamente{} — use `nexttool-cli tasks resume {}` para retomar",
                     r.task.id,
                     r.task.title,
                     if r.child_still_running { " (processo filho ainda ativo!)" } else { "" },
@@ -453,6 +462,23 @@ fn run(cli: Cli, data_dir: &Path) -> Result<i32, String> {
         Cmd::Copy(c) => copy(c, data_dir, json),
         Cmd::Tasks(c) => tasks(c, data_dir, json),
         Cmd::Alerts(c) => alerts(c, data_dir, json),
+        Cmd::Settings(c) => {
+            let s = open_store(data_dir)?;
+            match c {
+                SettingsCmd::List => {
+                    for (k, _, expected) in nexttool_store::SETTINGS {
+                        let v = s.get_setting(k).map_err(|e| e.to_string())?;
+                        println!("{k:<12} = {:<10} ({expected})", v.unwrap_or_else(|| "(padrão)".into()));
+                    }
+                }
+                SettingsCmd::Set { key, value } => {
+                    nexttool_store::validate_setting(&key, &value).map_err(|e| e.to_string())?;
+                    s.set_setting(&key, &value).map_err(|e| e.to_string())?;
+                    println!("{key} = {value}");
+                }
+            }
+            Ok(EXIT_OK)
+        }
         Cmd::Sys => {
             println!("{}", serde_json::to_string_pretty(&nexttool_core::process::self_stats()).unwrap_or_default());
             Ok(EXIT_OK)
@@ -794,7 +820,7 @@ fn copy(c: CopyCmd, data_dir: &Path, json: bool) -> Result<i32, String> {
                         for p in r.delete_sample.iter().take(20) {
                             println!("    - {p}");
                         }
-                        println!("  para executar: nexttool copy run ... --profile mirror --approve-deletions {}", r.would_delete_files + r.would_delete_dirs);
+                        println!("  para executar: nexttool-cli copy run ... --profile mirror --approve-deletions {}", r.would_delete_files + r.would_delete_dirs);
                     }
                     println!("  erros na prévia: {} · log: {}", r.errors, r.log_file);
                 });
@@ -811,7 +837,7 @@ fn copy(c: CopyCmd, data_dir: &Path, json: bool) -> Result<i32, String> {
             job.source = abs(&job.source)?;
             job.dest = abs(&job.dest)?;
             if job.options.mirror && job.approved_deletions.is_none() {
-                return Err("espelhamento exclui arquivos no destino: execute `nexttool copy plan` e informe --approve-deletions <N>".into());
+                return Err("espelhamento exclui arquivos no destino: execute `nexttool-cli copy plan` e informe --approve-deletions <N>".into());
             }
             let title = format!("Cópia {} → {}", job.source.display(), job.dest.display());
             run_task(data_dir, TaskSpec::Copy(CopySpec { job }), title, json)

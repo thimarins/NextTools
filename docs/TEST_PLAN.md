@@ -5,7 +5,7 @@ Como executar:
 ```
 cargo test --workspace            # unitários + integração (inclui Robocopy real no Windows)
 cargo build --release -p nexttool-cli
-target\release\nexttool size bench <raiz> --json-out bench.jsonl
+target\release\nexttool-cli size bench <raiz> --json-out bench.jsonl
 ```
 
 Legenda: ✅ automatizado e passando · 🧪 executado manualmente na Fase 0 (resultado em BENCHMARKS/PHASE0_REPORT) · ⏳ pendente (fase indicada)
@@ -51,6 +51,33 @@ Legenda: ✅ automatizado e passando · 🧪 executado manualmente na Fase 0 (re
 | Origem inexistente → falha fatal `NotFound` | `missing_source_is_fatal` | ✅ |
 | Pausar durante a cópia (processo encerrado) → retomar → conteúdo idêntico (BLAKE3) | `pause_stops_process_and_rerun_completes_with_identical_content` | ✅ |
 | Seleção individual: um processo por diretório, verificação só dos selecionados | `individual_selection_runs_one_process_per_directory` | ✅ |
+
+## 2b. Fase 1 — novos testes automatizados (7)
+
+| Cenário | Teste | Status |
+|---|---|---|
+| Dois agendadores (dois processos) sobre o mesmo `app.db` nunca executam a mesma tarefa | `two_schedulers_never_run_the_same_task` | ✅ |
+| A CLI agenda só as próprias tarefas | `tick_only_ignores_other_tasks` | ✅ |
+| Allowlist de configurações (chave desconhecida e valor inválido recusados) | `nexttool-store::settings::allowlist` | ✅ |
+| Cada comando IPC tem permissão na capability, e nenhuma permissão aponta para um comando inexistente | `command_list_matches_capability` | ✅ |
+| Análise ponta a ponta pela camada IPC (envio → agendador → snapshot → resumo, top, consulta paginada com request_id, listagem, estatísticas, visão geral) | `scan_end_to_end_through_ipc_layer` | ✅ |
+| Validação de entradas da UI (`..`, relativo, inexistente, extensão `.nxs`, configuração fora da allowlist, destino dentro da origem, espelhamento sem aprovação, estado desconhecido) | `inputs_are_validated` | ✅ |
+| Retomar só a partir de estados retomáveis | `resume_only_from_resumable_states` | ✅ |
+
+Também: `tsc -b` (TypeScript estrito) sem erros.
+
+## 2c. Fase 1 — ponta a ponta no app real (manual guiado via CDP)
+
+App `NextTool.exe` em release, conduzido pelo WebView2 com depuração remota (apenas durante o teste, em localhost):
+
+| Cenário | Resultado |
+|---|---|
+| Todas as telas renderizam sem estouro horizontal (`scrollWidth == innerWidth`), tema escuro | 🧪 ok, após 2 correções (grid sem `min-w-0`; IDs duplicados) |
+| Iniciar análise de 1 M arquivos pelo formulário → progresso ao vivo → **Pausar** na UI → "Pausada" → **Retomar** → "Concluída" com exatamente 1.000.000 arquivos | 🧪 ok |
+| Abrir o snapshot pela lista → resumo, maiores arquivos | 🧪 ok, após correção da coluna de caminho |
+| Trocar para tema claro, cor e densidade compacta pela UI → aplicado em todas as telas e persistido no `app.db` (lido pela CLI) | 🧪 ok |
+| Histórico compartilhado CLI ↔ app (modo portátil) | 🧪 ok |
+| Alerta criado pela CLI (acesso negado) exibido com todos os campos | 🧪 ok |
 
 ## 3. Manuais / escala (Fase 0)
 

@@ -1,0 +1,18 @@
+[package]
+name = "nextcopy-robocopy"
+description = "NextCopy: motor Robocopy (processo filho com argumentos estruturados, interpretação de log independente de idioma, códigos de saída)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nexttool-core.workspace = true
+nextcopy-core.workspace = true
+tracing.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+nextcopy-verify.workspace = true

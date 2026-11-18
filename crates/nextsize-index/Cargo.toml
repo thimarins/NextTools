@@ -1,0 +1,19 @@
+[package]
+name = "nextsize-index"
+description = "NextSize: snapshot persistente (SQLite), retomada, agregações, consultas paginadas"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nexttool-core.workspace = true
+nextsize-core.workspace = true
+nextsize-scanner.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

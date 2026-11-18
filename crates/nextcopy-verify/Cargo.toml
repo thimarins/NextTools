@@ -1,0 +1,15 @@
+[package]
+name = "nextcopy-verify"
+description = "NextCopy: verificação pós-cópia (padrão: existência/tamanho/data; rigorosa: hash BLAKE3 completo)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nexttool-core.workspace = true
+nextcopy-core.workspace = true
+blake3.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

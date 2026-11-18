@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use nexttool_core::fs::Backend;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -14,16 +15,15 @@ pub enum Profile {
     Fast,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum Backend {
-    /// Native API on the current platform, portable otherwise.
-    #[default]
-    Auto,
-    /// Windows: FindFirstFileExW (FindExInfoBasic + LARGE_FETCH).
-    Native,
-    /// Rust std::fs (works everywhere; baseline for benchmarks).
-    Portable,
+impl Profile {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "economy" | "eco" | "economico" => Some(Profile::Economy),
+            "balanced" | "equilibrado" => Some(Profile::Balanced),
+            "fast" | "rapido" | "alto" => Some(Profile::Fast),
+            _ => None,
+        }
+    }
 }
 
 /// Concrete resource limits derived from a profile. Every queue and buffer in

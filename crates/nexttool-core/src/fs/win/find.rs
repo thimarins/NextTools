@@ -2,16 +2,16 @@ use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
 use std::path::Path;
 
-use nextsize_core::model::flags as f;
-use nextsize_core::time::filetime_to_unix;
-use nextsize_core::{DirEnumerator, EntryKind, EntryRef, EnumError, IssueKind};
+use crate::error::classify_os_error;
+use crate::fs::{flags as f, DirEnumerator, EntryKind, EntryRef, EnumError};
+use crate::time::filetime_to_unix;
 use windows_sys::Win32::Foundation::{GetLastError, FILETIME, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Storage::FileSystem::{
     FindClose, FindExInfoBasic, FindExSearchNameMatch, FindFirstFileExW, FindNextFileW, FIND_FIRST_EX_LARGE_FETCH,
     WIN32_FIND_DATAW,
 };
 
-use crate::path::to_extended_wide;
+use super::path::to_extended_wide;
 
 // File attribute bits (winnt.h). Declared locally to stay independent of
 // windows-sys type aliases.
@@ -30,21 +30,8 @@ const A_RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
 
 const IO_REPARSE_TAG_SYMLINK: u32 = 0xA000_000C;
 
-// Win32 error codes.
 const ERROR_FILE_NOT_FOUND: u32 = 2;
-const ERROR_PATH_NOT_FOUND: u32 = 3;
-const ERROR_ACCESS_DENIED: u32 = 5;
 const ERROR_NO_MORE_FILES: u32 = 18;
-const ERROR_BAD_NETPATH: u32 = 53;
-const ERROR_NETWORK_BUSY: u32 = 54;
-const ERROR_UNEXP_NET_ERR: u32 = 59;
-const ERROR_NETNAME_DELETED: u32 = 64;
-const ERROR_BAD_NET_NAME: u32 = 67;
-const ERROR_SEM_TIMEOUT: u32 = 121;
-const ERROR_DIRECTORY: u32 = 267;
-const ERROR_FILENAME_EXCED_RANGE: u32 = 206;
-const ERROR_NETWORK_UNREACHABLE: u32 = 1231;
-const ERROR_CONNECTION_ABORTED: u32 = 1236;
 
 /// `FindFirstFileExW`-based enumerator (Windows "compatible" mode).
 #[derive(Debug, Default, Clone, Copy)]
@@ -66,17 +53,8 @@ fn ft(t: &FILETIME) -> Option<i64> {
 }
 
 fn map_error(code: u32, partial: bool) -> EnumError {
-    let kind = match code {
-        ERROR_ACCESS_DENIED => IssueKind::AccessDenied,
-        ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND | ERROR_DIRECTORY => IssueKind::NotFound,
-        ERROR_FILENAME_EXCED_RANGE => IssueKind::PathTooLong,
-        ERROR_SEM_TIMEOUT => IssueKind::Timeout,
-        ERROR_BAD_NETPATH | ERROR_NETWORK_BUSY | ERROR_UNEXP_NET_ERR | ERROR_NETNAME_DELETED | ERROR_BAD_NET_NAME
-        | ERROR_NETWORK_UNREACHABLE | ERROR_CONNECTION_ABORTED => IssueKind::Network,
-        _ => IssueKind::Io,
-    };
     EnumError {
-        kind,
+        kind: classify_os_error(code),
         os_code: Some(code as i32),
         message: std::io::Error::from_raw_os_error(code as i32).to_string(),
         partial,
@@ -229,6 +207,6 @@ mod tests {
     fn missing_dir_is_not_found() {
         let t = tempfile::tempdir().unwrap();
         let err = FindEnumerator.enumerate(&t.path().join("nope"), &mut |_| true).unwrap_err();
-        assert_eq!(err.kind, IssueKind::NotFound);
+        assert_eq!(err.kind, crate::error::ErrorKind::NotFound);
     }
 }

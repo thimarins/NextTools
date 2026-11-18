@@ -1,10 +1,11 @@
 [package]
 name = "nextsize-core"
-description = "NextSize: modelos, contratos, opções e erros compartilhados"
+description = "NextSize: modelo de varredura, contratos do pipeline, perfis e progresso"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
+nexttool-core.workspace = true
 thiserror.workspace = true
 serde.workspace = true

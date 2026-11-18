@@ -1,0 +1,11 @@
+[package]
+name = "nextcopy-core"
+description = "NextCopy: modelo de tarefa de cópia, perfis, políticas, validação e contrato do motor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nexttool-core.workspace = true
+serde.workspace = true
+thiserror.workspace = true

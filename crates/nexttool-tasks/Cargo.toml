@@ -1,0 +1,22 @@
+[package]
+name = "nexttool-tasks"
+description = "NextTool: orquestração de tarefas (fila, prioridades, concorrência por recurso, retentativas, recuperação, monitoramento e diagnóstico)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nexttool-core.workspace = true
+nexttool-store.workspace = true
+nextsize-core.workspace = true
+nextsize-scanner.workspace = true
+nextsize-index.workspace = true
+nextcopy-core.workspace = true
+nextcopy-robocopy.workspace = true
+nextcopy-verify.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "nexttool-core"
+description = "NextTool: núcleo compartilhado (erros, enumeração de diretórios, tempo, modelos de tarefa e alerta, validação de caminhos)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

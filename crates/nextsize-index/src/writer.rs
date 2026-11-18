@@ -44,6 +44,12 @@ pub struct IndexWriter {
     acc: HashMap<NodeId, DirAcc>,
     progress: Arc<ScanProgress>,
     pub(crate) timings: Vec<(String, u64)>,
+    /// Counters of rows written in this snapshot, persisted in `meta` with
+    /// every commit so a partial snapshot shows real (labeled) numbers.
+    c_files: u64,
+    c_bytes: u64,
+    c_dirs: u64,
+    c_issues: u64,
 }
 
 fn i64s(v: u64) -> i64 {
@@ -113,6 +119,10 @@ impl IndexWriter {
             exts,
             next_ext,
             acc: HashMap::new(),
+            c_files: progress.files.load(Relaxed),
+            c_bytes: progress.bytes.load(Relaxed),
+            c_dirs: progress.dirs.load(Relaxed),
+            c_issues: progress.issues.load(Relaxed),
             progress,
             timings: Vec::new(),
         }
@@ -132,6 +142,10 @@ impl IndexWriter {
 
     fn commit(&mut self) -> rusqlite::Result<()> {
         if self.in_tx {
+            // Same transaction as the rows: counters always match committed data.
+            for (k, v) in [("files", self.c_files), ("bytes", self.c_bytes), ("dirs", self.c_dirs), ("issues", self.c_issues)] {
+                set_meta(&self.conn, k, &v.to_string())?;
+            }
             self.conn.execute_batch("COMMIT")?;
             self.in_tx = false;
             self.progress.rows_committed.fetch_add(self.rows_since as u64, Relaxed);
@@ -177,6 +191,7 @@ impl IndexWriter {
                         i.message
                     ])?;
                 self.rows_since += 1;
+                self.c_issues += 1;
             }
             SinkMsg::Chunk(c) => {
                 let mut acc = self.acc.remove(&c.dir_id).unwrap_or_default();
@@ -203,6 +218,8 @@ impl IndexWriter {
                             ])?;
                     } else {
                         let ext = self.ext_id(&e.name)?;
+                        self.c_files += 1;
+                        self.c_bytes = self.c_bytes.saturating_add(e.size);
                         acc.files += 1;
                         acc.size = acc.size.saturating_add(i64s(e.size));
                         if let Some(a) = e.alloc {
@@ -238,6 +255,7 @@ impl IndexWriter {
                         )?
                         .execute(params![acc.files, acc.dirs, acc.size, acc.alloc, extra, c.dir_id as i64])?;
                     self.rows_since += 1;
+                    self.c_dirs += 1;
                 } else {
                     self.acc.insert(c.dir_id, acc);
                 }

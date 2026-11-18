@@ -416,7 +416,7 @@ fn progress_line(p: &str) -> String {
 
 fn print_task(r: &TaskRecord) {
     println!("tarefa {} [{}] {}", r.id, r.state.as_str(), r.title);
-    println!("  tentativas: {}/{}", r.attempt, r.max_attempts);
+    println!("  execuções: {} (limite de retentativas automáticas: {})", r.attempt, r.max_attempts);
     if let Some(e) = &r.error_message {
         println!("  erro ({}): {e}", r.error_kind.clone().unwrap_or_default());
     }

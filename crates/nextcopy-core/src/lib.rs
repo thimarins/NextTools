@@ -2,6 +2,7 @@
 //! engine (`nextcopy-robocopy`); a native Rust engine may implement the same
 //! `CopyEngine` trait later.
 
+pub mod diagnostics;
 mod job;
 mod profile;
 mod result;

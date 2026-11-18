@@ -74,3 +74,17 @@ Agendamento criado pelo formulário do NextSize ("Agendar…", uma vez, daqui a 
 
 - SMB/NAS real (concorrência adaptativa, queda de rede), volume pequeno (destino sem espaço), log do Robocopy em pt-BR, VMs Windows Server.
 - **Empacotamento (Fase 6):** gerar instaladores MSI/NSIS e a versão Portátil exige **baixar** ferramentas (WiX/NSIS, via Tauri) e o WebView2 Fixed Version (Microsoft). Vou pedir sua autorização antes desses downloads.
+
+## Fase 4 (início)
+
+- **Recomendações do NextCopy** (ADR-040): 7 regras com evidência e confiança, exibidas nos detalhes da tarefa; teste `rules_fire_only_with_evidence` e validação com cópia real de 100 mil arquivos.
+- **Totais:** 81 testes passando, 4 de campo preparados, 0 falhas.
+
+## O que falta e por quê
+
+| Item | Bloqueio |
+|---|---|
+| Modo NTFS rápido (MFT/USN) — Fase 5 | Exige ler o volume com **privilégio de administrador**; o app nunca se eleva sozinho. Preciso de autorização para testar numa sessão elevada (ou numa VM). |
+| Scanner Linux / NFS — Fase 5 | Precisa de uma máquina Linux (ou WSL) e baixar o alvo de compilação Linux do Rust. |
+| Instaladores MSI/NSIS e versão Portátil — Fase 6 | Exige **baixar** ferramentas de build (WiX/NSIS) e o WebView2 Fixed Version. |
+| Testes de campo | SMB/NAS, volume pequeno, Windows pt-BR, VMs Windows Server. |

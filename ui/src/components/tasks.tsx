@@ -268,11 +268,34 @@ function PlainError({ t, result }: { t: TaskRecord; result: Record<string, any> 
   );
 }
 
+function Recommendations({ recs }: { recs: { id: string; title: string; evidence: string; suggestion: string; confidence: string }[] }) {
+  if (!recs?.length) return null;
+  return (
+    <div className="mb-4 rounded-lg border border-info/40 bg-info/8 p-3 text-sm">
+      <p className="font-medium">Recomendações para a próxima execução</p>
+      <p className="mb-2 text-xs text-muted-foreground">Baseadas nas métricas desta cópia. Nada é alterado automaticamente.</p>
+      <ul className="grid gap-2">
+        {recs.map((r) => (
+          <li key={r.id}>
+            <p className="font-medium">
+              {r.title} <Badge className="ml-1">confiança {r.confidence}</Badge>
+            </p>
+            <p className="text-xs text-muted-foreground">Evidência: {r.evidence}</p>
+            <p>{r.suggestion}</p>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function ResultBlock({ result }: { result: Record<string, any> }) {
   if (result.stats) {
     const s = result.stats;
     const v = result.verify;
     return (
+      <>
+      <Recommendations recs={result.recommendations} />
       <div className="mb-4 grid gap-2 rounded-lg border p-3 text-sm">
         <p className="font-medium">Resultado da cópia</p>
         <p>
@@ -286,6 +309,7 @@ function ResultBlock({ result }: { result: Record<string, any> }) {
           </p>
         )}
       </div>
+      </>
     );
   }
   if (result.outcome) {

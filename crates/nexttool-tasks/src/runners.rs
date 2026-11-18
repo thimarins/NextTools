@@ -226,6 +226,7 @@ impl TaskRunner for CopyRunner {
             let t0 = Instant::now();
             let mut mon = ActivityMonitor::new(600.0);
             let mut last_activity = Activity::Active;
+            let mut slowdown_seen = false;
             let res = engine.run(job, &log_dir, &control, &mut |ev| match ev {
                 CopyEvent::Started { pid, run_index, runs } => {
                     ctx.set_child(Some(pid));
@@ -233,6 +234,9 @@ impl TaskRunner for CopyRunner {
                 }
                 CopyEvent::Progress { files_done, bytes_done, errors, io_read, io_write, log_bytes } => {
                     let d = mon.observe(Sample { t: t0.elapsed().as_secs_f64(), work: files_done, bytes: io_write, io: io_read + io_write, log: log_bytes, alive: true });
+                    if d.activity == Activity::Slow {
+                        slowdown_seen = true;
+                    }
                     if d.activity != last_activity && d.activity != Activity::Active {
                         if let Some(a) = crate::alerts::activity(Module::NextCopy, ctx.id, &d) {
                             ctx.alert(&a);
@@ -259,6 +263,16 @@ impl TaskRunner for CopyRunner {
                 Err(e) => return RunOutcome::failed(ErrorKind::Internal, e.to_string(), target),
             };
             let mut json = serde_json::to_value(&result).unwrap_or_default();
+            let recs = nextcopy_core::diagnostics::recommend(&nextcopy_core::diagnostics::CopyFacts {
+                stats: &result.stats,
+                elapsed_ms: result.elapsed_ms,
+                options: &job.options,
+                dominant_error: result.dominant_error,
+                remote_source: nexttool_core::fs::is_remote_path(&job.source),
+                remote_dest: nexttool_core::fs::is_remote_path(&job.dest),
+                slowdown_seen,
+            });
+            json["recommendations"] = serde_json::to_value(&recs).unwrap_or_default();
             let (state, error) = match result.outcome {
                 CopyOutcome::Completed | CopyOutcome::CompletedWithWarnings => {
                     let base = if result.outcome == CopyOutcome::Completed { TaskState::Completed } else { TaskState::CompletedWithWarnings };

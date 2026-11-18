@@ -238,3 +238,20 @@ Doze categorias fixas e documentadas (`nextsize_core::category`), sem inspeciona
 
 ### ADR-039 — Verificação rigorosa em paralelo
 Hash BLAKE3 num pool fixo de até 4 threads com fila limitada (256 tarefas); arquivos em processamento ≤ fila + threads. Resultados idênticos aos da versão sequencial (mesmos testes). Medido: 100 mil arquivos pequenos, 173 s → 51 s.
+
+## Fase 4 — Integração e inteligência
+
+### ADR-040 — Recomendações do NextCopy por regras e evidências
+Ao final de cada cópia, regras documentadas (`nextcopy_core::diagnostics`) avaliam as métricas reais e geram recomendações com **evidência** e **confiança**. Nada é aplicado automaticamente.
+
+| Regra | Dispara quando | Sugestão | Confiança |
+|---|---|---|---|
+| small-files-threads | ≥ 10 mil arquivos, média < 64 KB, < 16 threads | 16–32 threads (12–16 em NAS, subindo aos poucos) | média |
+| large-files-unbuffered | média ≥ 256 MB, sem /J | testar cópia sem buffer | baixa |
+| large-remote-restartable | rede + média ≥ 1 GB, sem /Z | modo reiniciável | média |
+| locked-files | causa predominante: arquivo em uso | agendar fora do horário ou fechar programas e retomar | alta |
+| network-reduce-threads | erros de rede/timeout com > 4 threads | reduzir para 4–8 threads | média |
+| slowdown | o monitor viu queda persistente | lista de causas a verificar, sem afirmar nenhuma | baixa |
+| migration-verify | ACL/dono com verificação básica | verificação Padrão ou Rigorosa | alta |
+
+Validação real: cópia de 100 mil arquivos (média 0,2 KB, 1.868 arquivos/s com 8 threads) → "Muitos arquivos pequenos", confiança média.

@@ -12,6 +12,7 @@ use nexttool_core::security::validate_user_path;
 use nexttool_core::task::{TaskId, TaskKind, TaskState};
 use nexttool_store::{AppStore, RecoveredTask, TaskRecord};
 use nexttool_tasks::runners::default_factory;
+use nexttool_tasks::schedule::Recurrence;
 use nexttool_tasks::{CopySpec, SizeScanSpec, TaskManager, TaskSpec};
 use nextcopy_core::{CopyJob, CopyProfile, DryRunReport, VerifyLevel};
 use nextsize_core::Profile;
@@ -83,7 +84,7 @@ pub struct TaskDetail {
     pub events: Vec<(i64, String, String)>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ScanRequest {
     pub root: String,
     /// Optional explicit snapshot path; default: <data>/snapshots/<name>-<ts>.nxs
@@ -91,7 +92,7 @@ pub struct ScanRequest {
     pub profile: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CopyRequest {
     pub source: String,
     pub dest: String,
@@ -110,6 +111,7 @@ pub struct QueryRequest {
     pub min_size: Option<u64>,
     pub max_size: Option<u64>,
     pub ext: Option<String>,
+    pub category: Option<String>,
     pub modified_before: Option<i64>,
     pub modified_after: Option<i64>,
     pub year: Option<i32>,
@@ -127,6 +129,22 @@ pub struct Paged<T> {
 }
 
 #[derive(Debug, Serialize)]
+pub struct ScheduleView {
+    #[serde(flatten)]
+    pub record: nexttool_store::ScheduleRecord,
+    pub description: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OwnerInfo {
+    pub path: String,
+    pub owner: Option<String>,
+    pub sid: Option<String>,
+    pub orphan: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct DirInfo {
     /// Root first: (dir id, name). The root's name is the full scanned path.
     pub chain: Vec<(i64, String)>,
@@ -138,6 +156,7 @@ pub struct DirInfo {
 
 #[derive(Debug, Serialize)]
 pub struct Stats {
+    pub categories: Vec<nextsize_index::CategoryRow>,
     pub extensions: Vec<ExtRow>,
     pub years: Vec<YearRow>,
 }
@@ -146,6 +165,8 @@ pub struct Core {
     pub mgr: Arc<TaskManager>,
     pub data_dir: PathBuf,
     queries: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    #[cfg(windows)]
+    owners: nexttool_core::fs::win::OwnerResolver,
 }
 
 /// Paths from the UI must already be absolute and free of `.`/`..`: they are
@@ -192,7 +213,16 @@ impl Core {
         }
         let max_running = store.get_setting("max_running")?.and_then(|v| v.parse().ok()).unwrap_or(2);
         let mgr = Arc::new(TaskManager::new(store, data_dir.clone(), default_factory(), max_running));
-        Ok((Core { mgr, data_dir, queries: Mutex::new(HashMap::new()) }, recovered))
+        Ok((
+            Core {
+                mgr,
+                data_dir,
+                queries: Mutex::new(HashMap::new()),
+                #[cfg(windows)]
+                owners: Default::default(),
+            },
+            recovered,
+        ))
     }
 
     pub fn app_info(&self) -> AppInfo {
@@ -386,6 +416,129 @@ impl Core {
         Ok(nextsize_index::compare_children(&sa, &sb, &rel, page(limit) as usize)?)
     }
 
+    // ---------------------------------------------------------- schedules
+
+    /// Creates a schedule after validating the request exactly like an
+    /// immediate submission would (paths, job, mirror approval).
+    pub fn schedule_create(&self, title: String, kind: &str, request: serde_json::Value, recurrence: Recurrence) -> ApiResult<i64> {
+        let now = nexttool_core::time::now_unix();
+        recurrence.validate(now).map_err(|e| ApiError::new("invalid_argument", e.to_string()))?;
+        let next = recurrence.next_after(now).ok_or_else(|| ApiError::new("invalid_argument", "a recorrência não tem próxima execução"))?;
+        let title = title.trim().chars().take(120).collect::<String>();
+        match kind {
+            "scan" => {
+                let req: ScanRequest = serde_json::from_value(request.clone()).map_err(|e| ApiError::new("invalid_argument", e.to_string()))?;
+                let root = abs_path(&req.root)?;
+                if !root.is_dir() {
+                    return Err(ApiError::new("not_found", format!("diretório não encontrado: {}", root.display())));
+                }
+                Profile::parse(&req.profile).ok_or_else(|| ApiError::new("invalid_argument", "perfil inválido"))?;
+            }
+            "copy" => {
+                let req: CopyRequest = serde_json::from_value(request.clone()).map_err(|e| ApiError::new("invalid_argument", e.to_string()))?;
+                let job = self.copy_job(&req)?;
+                if job.options.mirror && job.approved_deletions.is_none() {
+                    return Err(ApiError::new("approval_required", "espelhamento agendado exige a aprovação de exclusões de uma prévia"));
+                }
+            }
+            _ => return Err(ApiError::new("invalid_argument", "tipo de agendamento inválido")),
+        }
+        let title = if title.is_empty() { format!("{} agendada", if kind == "scan" { "Análise" } else { "Cópia" }) } else { title };
+        Ok(self.mgr.store().schedule_create(&title, kind, &request.to_string(), &serde_json::to_string(&recurrence).unwrap_or_default(), Some(next))?)
+    }
+
+    pub fn schedules_list(&self) -> ApiResult<Vec<ScheduleView>> {
+        let list = self.mgr.store().schedules()?;
+        Ok(list
+            .into_iter()
+            .map(|s| {
+                let rec: Option<Recurrence> = serde_json::from_str(&s.recurrence_json).ok();
+                ScheduleView { description: rec.as_ref().map(|r| r.describe()).unwrap_or_default(), record: s }
+            })
+            .collect())
+    }
+
+    pub fn schedule_set_enabled(&self, id: i64, enabled: bool) -> ApiResult<bool> {
+        let s = self.mgr.store().schedule_get(id)?.ok_or_else(|| ApiError::new("not_found", "agendamento não encontrado"))?;
+        let rec: Recurrence = serde_json::from_str(&s.recurrence_json).map_err(|e| ApiError::new("internal", e.to_string()))?;
+        let next = if enabled { rec.next_after(nexttool_core::time::now_unix()) } else { None };
+        Ok(self.mgr.store().schedule_set_enabled(id, enabled, next)?)
+    }
+
+    pub fn schedule_delete(&self, id: i64) -> ApiResult<bool> {
+        Ok(self.mgr.store().schedule_delete(id)?)
+    }
+
+    /// Runs schedules that are due. A run missed by more than `grace_s`
+    /// (app was closed) is NOT executed late: an alert is raised and the
+    /// schedule moves to its next occurrence.
+    pub fn run_due_schedules(&self, now: i64, grace_s: i64) -> Vec<(i64, String)> {
+        let due = match self.mgr.store().schedules_due(now) {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!("schedules_due failed: {e}");
+                return Vec::new();
+            }
+        };
+        let mut out = Vec::new();
+        for s in due {
+            let rec: Option<Recurrence> = serde_json::from_str(&s.recurrence_json).ok();
+            let next = rec.as_ref().and_then(|r| r.next_after(now));
+            let scheduled = s.next_run_at.unwrap_or(now);
+            if now - scheduled > grace_s {
+                let d = nexttool_core::alert::AlertDraft {
+                    module: nexttool_core::task::Module::System,
+                    task_id: None,
+                    severity: nexttool_core::Severity::Warning,
+                    fingerprint: format!("schedule.missed.{}", s.id),
+                    title: "Execução agendada não realizada".into(),
+                    problem: format!("\"{}\" estava agendada para {} mas o NextTool estava fechado.", s.title, scheduled),
+                    probable_cause: Some("O agendamento da v1 só funciona com o aplicativo aberto.".into()),
+                    consequence: "A execução não foi feita. Execuções perdidas não são iniciadas automaticamente depois.".into(),
+                    recommended_action: "Execute manualmente se necessário. A próxima ocorrência foi mantida.".into(),
+                    recoverable: true,
+                    details: Some(format!("agendamento #{} · {}", s.id, rec.as_ref().map(|r| r.describe()).unwrap_or_default())),
+                };
+                let _ = self.mgr.store().raise_alert(&d);
+                let _ = self.mgr.store().schedule_mark(s.id, None, None, "perdida (aplicativo fechado)", next);
+                out.push((s.id, "missed".into()));
+                continue;
+            }
+            let res: ApiResult<TaskId> = match s.kind.as_str() {
+                "scan" => serde_json::from_str::<ScanRequest>(&s.request_json).map_err(|e| ApiError::new("internal", e.to_string())).and_then(|r| self.size_scan_submit(r)),
+                "copy" => serde_json::from_str::<CopyRequest>(&s.request_json).map_err(|e| ApiError::new("internal", e.to_string())).and_then(|r| self.copy_submit(r)),
+                _ => Err(ApiError::new("internal", "tipo desconhecido")),
+            };
+            let (result, task) = match res {
+                Ok(id) => (format!("tarefa #{id} criada"), Some(id)),
+                Err(e) => (format!("falhou ao criar: {}", e.message), None),
+            };
+            let _ = self.mgr.store().schedule_mark(s.id, Some(now), task, &result, next);
+            out.push((s.id, result));
+        }
+        out
+    }
+
+    /// Current owner of up to 200 existing paths (live lookup, read-only).
+    pub fn owners_lookup(&self, paths: Vec<String>) -> ApiResult<Vec<OwnerInfo>> {
+        if paths.len() > 200 {
+            return Err(ApiError::new("invalid_argument", "no máximo 200 caminhos por consulta"));
+        }
+        let mut out = Vec::with_capacity(paths.len());
+        for p in paths {
+            let path = abs_path(&p)?;
+            #[cfg(windows)]
+            let r = match self.owners.owner_of(&path) {
+                Ok(o) => OwnerInfo { path: p, owner: Some(o.name), sid: Some(o.sid), orphan: o.orphan, error: None },
+                Err((k, m)) => OwnerInfo { path: p, owner: None, sid: None, orphan: false, error: Some(format!("{}: {m}", k.as_str())) },
+            };
+            #[cfg(not(windows))]
+            let r = { let _ = path; OwnerInfo { path: p, owner: None, sid: None, orphan: false, error: Some("não suportado nesta plataforma".into()) } };
+            out.push(r);
+        }
+        Ok(out)
+    }
+
     pub fn snapshot_top_files(&self, path: &str, limit: Option<u32>) -> ApiResult<Vec<FileRow>> {
         Ok(self.open_snapshot(path)?.top_files(page(limit))?)
     }
@@ -407,6 +560,7 @@ impl Core {
             min_size: q.min_size,
             max_size: q.max_size,
             ext: q.ext.filter(|e| !e.trim().is_empty()),
+            category: q.category.filter(|e| !e.trim().is_empty()),
             modified_before: q.modified_before,
             modified_after: q.modified_after,
             year: q.year,
@@ -433,7 +587,7 @@ impl Core {
 
     pub fn snapshot_stats(&self, path: &str) -> ApiResult<Stats> {
         let s = self.open_snapshot(path)?;
-        Ok(Stats { extensions: s.ext_stats(30)?, years: s.year_stats()? })
+        Ok(Stats { categories: s.category_stats()?, extensions: s.ext_stats(30)?, years: s.year_stats()? })
     }
 
     fn copy_job(&self, req: &CopyRequest) -> ApiResult<CopyJob> {
@@ -649,6 +803,63 @@ mod tests {
         c.snapshot_delete(&path, &name).unwrap();
         assert!(!std::path::Path::new(&path).exists());
         assert_eq!(c.snapshots_list().unwrap().len(), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn owners_lookup_is_bounded_and_reports_errors() {
+        let (t, c) = core();
+        let f = t.path().join("o.txt");
+        std::fs::write(&f, b"x").unwrap();
+        let r = c.owners_lookup(vec![f.display().to_string(), t.path().join("missing").display().to_string()]).unwrap();
+        assert!(r[0].owner.is_some() && r[0].sid.as_deref().unwrap().starts_with("S-1-"));
+        assert!(r[1].owner.is_none() && r[1].error.as_deref().unwrap().starts_with("not_found"));
+        assert_eq!(c.owners_lookup(vec!["x".into(); 201]).unwrap_err().code, "invalid_argument");
+        assert_eq!(c.owners_lookup(vec![r"..\x".into()]).unwrap_err().code, "invalid_path");
+    }
+
+    #[test]
+    fn schedules_run_when_due_and_missed_runs_are_not_executed_late() {
+        let (t, c) = core();
+        let root = t.path().join("tree");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.txt"), b"abc").unwrap();
+        let now = nexttool_core::time::now_unix();
+        let req = serde_json::json!({ "root": root.display().to_string(), "profile": "economy", "snapshot": null });
+        // Validation is the same as for an immediate submission.
+        assert_eq!(c.schedule_create("x".into(), "scan", serde_json::json!({ "root": t.path().join("nope").display().to_string(), "profile": "balanced", "snapshot": null }), Recurrence::Daily { hour: 3, minute: 0 }).unwrap_err().code, "not_found");
+        assert_eq!(c.schedule_create("x".into(), "scan", req.clone(), Recurrence::Once { at: now - 10 }).unwrap_err().code, "invalid_argument");
+        let mirror = serde_json::json!({ "source": root.display().to_string(), "dest": t.path().join("b").display().to_string(), "profile": "mirror" });
+        assert_eq!(c.schedule_create("m".into(), "copy", mirror, Recurrence::Daily { hour: 3, minute: 0 }).unwrap_err().code, "approval_required");
+
+        let due = c.schedule_create("Análise noturna".into(), "scan", req.clone(), Recurrence::Once { at: now + 2 }).unwrap();
+        let daily = c.schedule_create("".into(), "scan", req, Recurrence::Daily { hour: 3, minute: 0 }).unwrap();
+        let list = c.schedules_list().unwrap();
+        assert_eq!(list.len(), 2);
+        assert!(list.iter().any(|s| s.description == "diariamente às 03:00"));
+        assert!(list.iter().any(|s| s.record.title == "Análise agendada"), "default title");
+
+        // Not due yet.
+        assert!(c.run_due_schedules(now, 120).is_empty());
+        // Due now → task created; once-schedule then has no next run.
+        let ran = c.run_due_schedules(now + 3, 120);
+        assert_eq!(ran.len(), 1);
+        assert!(ran[0].1.starts_with("tarefa #"), "{ran:?}");
+        let s = c.mgr.store().schedule_get(due).unwrap().unwrap();
+        assert!(s.next_run_at.is_none() && s.last_task_id.is_some());
+        let tasks = c.mgr.store().list_tasks(None, 10, 0).unwrap();
+        assert_eq!(tasks.len(), 1);
+        // Missed: the daily one, evaluated as if the app was closed for 10 min after its time.
+        let d = c.mgr.store().schedule_get(daily).unwrap().unwrap();
+        let ran = c.run_due_schedules(d.next_run_at.unwrap() + 600, 120);
+        assert_eq!(ran, vec![(daily, "missed".to_string())]);
+        assert_eq!(c.mgr.store().list_tasks(None, 10, 0).unwrap().len(), 1, "missed runs are not executed late");
+        assert!(c.mgr.store().list_alerts(false, 10).unwrap().iter().any(|a| a.draft.title.contains("não realizada")));
+        assert!(c.mgr.store().schedule_get(daily).unwrap().unwrap().next_run_at.unwrap() > d.next_run_at.unwrap());
+        // Disable / delete.
+        assert!(c.schedule_set_enabled(daily, false).unwrap());
+        assert!(c.mgr.store().schedule_get(daily).unwrap().unwrap().next_run_at.is_none());
+        assert!(c.schedule_delete(daily).unwrap());
     }
 
     #[test]

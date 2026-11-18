@@ -110,15 +110,109 @@ pub fn verify(
         rep.elapsed_ms = 0;
         return rep;
     }
+    let strict = level == VerifyLevel::Strict;
+    let hash_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).clamp(1, 4);
+    std::thread::scope(|scope| {
+        // Strict mode: hashing runs on a fixed pool; the job queue is bounded,
+        // so files in flight ≤ HASH_QUEUE + hash_threads.
+        let (job_tx, job_rx) = crossbeam_channel::bounded::<HashJob>(HASH_QUEUE);
+        let (res_tx, res_rx) = crossbeam_channel::unbounded::<HashResult>();
+        if strict {
+            for _ in 0..hash_threads {
+                let (jr, rt) = (job_rx.clone(), res_tx.clone());
+                scope.spawn(move || {
+                    let mut buf = vec![0u8; 1 << 20];
+                    for j in jr {
+                        let hs = hash_file(&j.src, cancel, &mut buf);
+                        let hd = hash_file(&j.dst, cancel, &mut buf);
+                        let outcome = match (hs, hd) {
+                            (Ok(Some(a)), Ok(Some(b))) => HashOutcome::Done(a, b),
+                            (Ok(None), _) | (_, Ok(None)) => HashOutcome::Cancelled,
+                            (Err(e), _) | (_, Err(e)) => HashOutcome::Error(e.to_string()),
+                        };
+                        if rt.send(HashResult { rel: j.rel, size: j.size, outcome }).is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        }
+        drop(res_tx);
+        drop(job_rx);
+        walk(job, level, enumerator, cancel, on_divergence, &mut rep, strict.then_some((&job_tx, &res_rx)));
+        drop(job_tx);
+        let mut push = |rep: &mut VerifyReport, d: Divergence| push_div(rep, on_divergence, d);
+        for r in res_rx.iter() {
+            apply_hash(&mut rep, &mut push, r);
+        }
+    });
+    if cancel.load(Ordering::Relaxed) {
+        rep.cancelled = true;
+    }
+    rep.elapsed_ms = t0.elapsed().as_millis() as u64;
+    rep
+}
+
+const HASH_QUEUE: usize = 256;
+
+struct HashJob {
+    src: PathBuf,
+    dst: PathBuf,
+    size: u64,
+    rel: String,
+}
+
+enum HashOutcome {
+    Done(blake3::Hash, blake3::Hash),
+    Cancelled,
+    Error(String),
+}
+
+struct HashResult {
+    rel: String,
+    size: u64,
+    outcome: HashOutcome,
+}
+
+fn push_div(rep: &mut VerifyReport, on_divergence: &mut dyn FnMut(&Divergence), d: Divergence) {
+    on_divergence(&d);
+    if rep.sample.len() < SAMPLE_CAP {
+        rep.sample.push(d);
+    }
+}
+
+fn apply_hash(rep: &mut VerifyReport, push: &mut dyn FnMut(&mut VerifyReport, Divergence), r: HashResult) {
+    match r.outcome {
+        HashOutcome::Done(a, b) => {
+            rep.bytes_hashed += r.size * 2;
+            if a == b {
+                rep.files_ok += 1;
+            } else {
+                rep.hash_mismatch += 1;
+                push(rep, Divergence { kind: DivergenceKind::HashMismatch, rel_path: r.rel, detail: format!("blake3 {} ≠ {}", a.to_hex(), b.to_hex()) });
+            }
+        }
+        HashOutcome::Cancelled => rep.cancelled = true,
+        HashOutcome::Error(e) => {
+            rep.errors += 1;
+            push(rep, Divergence { kind: DivergenceKind::Error, rel_path: r.rel, detail: e });
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn walk(
+    job: &CopyJob,
+    level: VerifyLevel,
+    enumerator: &dyn DirEnumerator,
+    cancel: &AtomicBool,
+    on_divergence: &mut dyn FnMut(&Divergence),
+    rep: &mut VerifyReport,
+    hashing: Option<(&crossbeam_channel::Sender<HashJob>, &crossbeam_channel::Receiver<HashResult>)>,
+) {
     let f = &job.options.filters;
     let now = nexttool_core::time::now_unix();
-    let mut buf = vec![0u8; 1 << 20];
-    let mut push = |rep: &mut VerifyReport, d: Divergence| {
-        on_divergence(&d);
-        if rep.sample.len() < SAMPLE_CAP {
-            rep.sample.push(d);
-        }
-    };
+    let mut push = |rep: &mut VerifyReport, d: Divergence| push_div(rep, on_divergence, d);
 
     // Explicit selection: verify only those files.
     let selection: Option<std::collections::HashSet<PathBuf>> =
@@ -178,12 +272,12 @@ pub fn verify(
                 Ok(m) => m,
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                     rep.missing += 1;
-                    push(&mut rep, Divergence { kind: DivergenceKind::Missing, rel_path: rel_s, detail: String::new() });
+                    push(rep, Divergence { kind: DivergenceKind::Missing, rel_path: rel_s, detail: String::new() });
                     return true;
                 }
                 Err(err) => {
                     rep.errors += 1;
-                    push(&mut rep, Divergence { kind: DivergenceKind::Error, rel_path: rel_s, detail: err.to_string() });
+                    push(rep, Divergence { kind: DivergenceKind::Error, rel_path: rel_s, detail: err.to_string() });
                     return true;
                 }
             };
@@ -201,54 +295,41 @@ pub fn verify(
                 };
                 if kept {
                     rep.kept_by_policy += 1;
-                    push(&mut rep, Divergence { kind: DivergenceKind::KeptByPolicy, rel_path: rel_s, detail: "destino mantido pela política de sobrescrita".into() });
+                    push(rep, Divergence { kind: DivergenceKind::KeptByPolicy, rel_path: rel_s, detail: "destino mantido pela política de sobrescrita".into() });
                 } else if !size_ok {
                     rep.size_mismatch += 1;
-                    push(&mut rep, Divergence { kind: DivergenceKind::SizeMismatch, rel_path: rel_s, detail: format!("origem {} B, destino {} B", e.size, md.len()) });
+                    push(rep, Divergence { kind: DivergenceKind::SizeMismatch, rel_path: rel_s, detail: format!("origem {} B, destino {} B", e.size, md.len()) });
                 } else {
                     rep.time_mismatch += 1;
-                    push(&mut rep, Divergence { kind: DivergenceKind::TimeMismatch, rel_path: rel_s, detail: format!("origem {:?}, destino {:?}", e.mtime, dmtime) });
+                    push(rep, Divergence { kind: DivergenceKind::TimeMismatch, rel_path: rel_s, detail: format!("origem {:?}, destino {:?}", e.mtime, dmtime) });
                 }
                 return true;
             }
             if level == VerifyLevel::Strict {
                 if e.flags & (flags::RECALL_ON_DATA_ACCESS | flags::RECALL_ON_OPEN | flags::OFFLINE) != 0 {
                     rep.not_verified += 1;
-                    push(&mut rep, Divergence { kind: DivergenceKind::NotVerified, rel_path: rel_s, detail: "arquivo em nuvem/offline na origem: não aberto para evitar download".into() });
+                    push(rep, Divergence { kind: DivergenceKind::NotVerified, rel_path: rel_s, detail: "arquivo em nuvem/offline na origem: não aberto para evitar download".into() });
                     return true;
                 }
-                let hs = hash_file(&src_dir.join(e.name), cancel, &mut buf);
-                let hd = hash_file(&dst, cancel, &mut buf);
-                match (hs, hd) {
-                    (Ok(Some(a)), Ok(Some(b))) => {
-                        rep.bytes_hashed += e.size * 2;
-                        if a != b {
-                            rep.hash_mismatch += 1;
-                            push(&mut rep, Divergence { kind: DivergenceKind::HashMismatch, rel_path: rel_s, detail: format!("blake3 {} ≠ {}", a.to_hex(), b.to_hex()) });
-                            return true;
-                        }
+                if let Some((tx, rx)) = hashing {
+                    // Drain finished results so they never pile up.
+                    while let Ok(r) = rx.try_recv() {
+                        apply_hash(rep, &mut push, r);
                     }
-                    (Ok(None), _) | (_, Ok(None)) => return false,
-                    (Err(err), _) | (_, Err(err)) => {
-                        rep.errors += 1;
-                        push(&mut rep, Divergence { kind: DivergenceKind::Error, rel_path: rel_s, detail: err.to_string() });
-                        return true;
+                    if tx.send(HashJob { src: src_dir.join(e.name), dst, size: e.size, rel: rel_s }).is_err() {
+                        return false;
                     }
                 }
+                return true;
             }
             rep.files_ok += 1;
             true
         });
         if let Err(e) = res {
             rep.errors += 1;
-            push(&mut rep, Divergence { kind: DivergenceKind::Error, rel_path: rel.to_string_lossy().into_owned(), detail: e.to_string() });
+            push(rep, Divergence { kind: DivergenceKind::Error, rel_path: rel.to_string_lossy().into_owned(), detail: e.to_string() });
         }
     }
-    if cancel.load(Ordering::Relaxed) {
-        rep.cancelled = true;
-    }
-    rep.elapsed_ms = t0.elapsed().as_millis() as u64;
-    rep
 }
 
 #[cfg(test)]

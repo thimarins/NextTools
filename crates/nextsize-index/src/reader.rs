@@ -77,6 +77,14 @@ pub struct ExtRow {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct CategoryRow {
+    pub id: String,
+    pub label: String,
+    pub files: u64,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct YearRow {
     pub year: Option<i64>,
     pub files: u64,
@@ -99,6 +107,8 @@ pub struct FileQuery {
     pub min_size: Option<u64>,
     pub max_size: Option<u64>,
     pub ext: Option<String>,
+    /// Category id (see nextsize_core::category). Ignored when `ext` is set.
+    pub category: Option<String>,
     pub modified_before: Option<i64>,
     pub modified_after: Option<i64>,
     pub year: Option<i32>,
@@ -385,6 +395,19 @@ impl Snapshot {
             sql.push_str(" JOIN exts x ON x.id = f.ext");
             cond.push("x.ext = ?".into());
             args.push(Value::Text(e.trim_start_matches('.').to_lowercase()));
+        } else if let Some(cat) = &q.category {
+            let exts = nextsize_core::category::extensions_of(cat);
+            if cat == "other" {
+                // Everything not in a known category (including no extension).
+                let all: Vec<&str> = nextsize_core::category::CATEGORIES.iter().flat_map(|c| c.2.iter().copied()).collect();
+                sql.push_str(" LEFT JOIN exts x ON x.id = f.ext");
+                cond.push(format!("(x.ext IS NULL OR x.ext NOT IN ({}))", vec!["?"; all.len()].join(",")));
+                args.extend(all.iter().map(|e| Value::Text(e.to_string())));
+            } else if !exts.is_empty() {
+                sql.push_str(" JOIN exts x ON x.id = f.ext");
+                cond.push(format!("x.ext IN ({})", vec!["?"; exts.len()].join(",")));
+                args.extend(exts.iter().map(|e| Value::Text(e.to_string())));
+            }
         }
         if let Some(v) = q.min_size {
             cond.push("f.size >= ?".into());
@@ -427,7 +450,7 @@ impl Snapshot {
         args.push(Value::Integer(q.offset as i64));
 
         // Without filter indexes, extension/date filters scan: bound them.
-        let uses_filter_idx = q.ext.is_some() || q.modified_before.is_some() || q.modified_after.is_some() || q.year.is_some();
+        let uses_filter_idx = q.ext.is_some() || q.category.is_some() || q.modified_before.is_some() || q.modified_after.is_some() || q.year.is_some();
         let limit = q.time_limit.or_else(|| (uses_filter_idx && !self.filter_indexes_ready()).then_some(PARTIAL_TIME_LIMIT));
         let rows: Vec<(i64, i64, String, i64, Option<i64>, u32)> = self.guarded(limit, || {
             let mut st = self.conn.prepare(&sql)?;
@@ -455,6 +478,26 @@ impl Snapshot {
             })?
             .collect::<Result<_, _>>()?;
         Ok(rows)
+    }
+
+    /// Distribution by category, derived from the extension aggregates
+    /// (no pass over `files`).
+    pub fn category_stats(&self) -> Result<Vec<CategoryRow>, QueryError> {
+        let mut st = self.conn.prepare("SELECT COALESCE(x.ext, ''), s.files, s.size FROM ext_stats s LEFT JOIN exts x ON x.id=s.ext")?;
+        let mut acc: std::collections::HashMap<&'static str, (u64, u64)> = std::collections::HashMap::new();
+        let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))?;
+        for row in rows {
+            let (ext, n, s) = row?;
+            let e = acc.entry(nextsize_core::category::category_of(&ext)).or_insert((0, 0));
+            e.0 += n.max(0) as u64;
+            e.1 += s.max(0) as u64;
+        }
+        let mut out: Vec<CategoryRow> = acc
+            .into_iter()
+            .map(|(id, (files, size))| CategoryRow { id: id.to_string(), label: nextsize_core::category::label_of(id).to_string(), files, size })
+            .collect();
+        out.sort_by_key(|r| std::cmp::Reverse(r.size));
+        Ok(out)
     }
 
     pub fn year_stats(&self) -> Result<Vec<YearRow>, QueryError> {

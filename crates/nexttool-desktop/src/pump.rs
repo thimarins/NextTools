@@ -24,7 +24,15 @@ fn run(app: AppHandle, core: Arc<Core>) {
     let mut sent: HashMap<TaskId, (TaskState, i64, Option<String>)> = HashMap::new();
     let mut alerts: HashMap<i64, i64> = HashMap::new(); // id → count
     let mut first = true;
+    let mut last_sched = std::time::Instant::now() - Duration::from_secs(60);
     loop {
+        // Schedules (v1: only while the app is open). Missed by > 2 min = app was closed.
+        if last_sched.elapsed() >= Duration::from_secs(5) {
+            last_sched = std::time::Instant::now();
+            for (id, r) in core.run_due_schedules(nexttool_core::time::now_unix(), 120) {
+                tracing::info!(schedule = id, result = %r, "schedule processed");
+            }
+        }
         if let Err(e) = core.mgr.tick() {
             tracing::warn!("scheduler tick failed: {e}");
         }

@@ -299,6 +299,28 @@ fn crash_during_finalization_is_recoverable() {
 }
 
 #[test]
+fn categories_from_extensions() {
+    let t = tempfile::tempdir().unwrap();
+    let root = t.path().join("tree");
+    build_tree(&root);
+    let exp = reference_walk(&root);
+    let db = t.path().join("c.nxs");
+    scan(&opts(&root, Backend::Native, 64), &db);
+    let s = Snapshot::open(&db).unwrap();
+    let cats = s.category_stats().unwrap();
+    assert_eq!(cats.iter().map(|c| c.files).sum::<u64>(), exp.files);
+    assert_eq!(cats.iter().map(|c| c.size).sum::<u64>(), exp.bytes);
+    let get = |id: &str| cats.iter().find(|c| c.id == id).map(|c| c.files).unwrap_or(0);
+    assert_eq!(get("documents"), 1001, "1000 .txt + 1 .pdf");
+    assert_eq!(get("backups"), 200);
+    assert_eq!(get("other"), 1, ".dat");
+    let q = |c: &str| s.query_files(&FileQuery { category: Some(c.into()), limit: 5000, ..Default::default() }).unwrap().len();
+    assert_eq!(q("documents"), 1001);
+    assert_eq!(q("backups"), 200);
+    assert_eq!(q("other"), 1);
+}
+
+#[test]
 fn filter_indexes_are_deferred_and_recoverable() {
     let t = tempfile::tempdir().unwrap();
     let root = t.path().join("tree");

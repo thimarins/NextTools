@@ -118,3 +118,19 @@ export const verifyLevels = [
   { value: "standard", label: "Padrão", hint: "Existência, tamanho e data de cada arquivo no destino." },
   { value: "strict", label: "Rigorosa", hint: "Padrão + hash completo (BLAKE3) de origem e destino. Lê tudo duas vezes." },
 ];
+
+/** Mirrors nextsize_core::category (ids must match). */
+export const fileCategories = [
+  { id: "documents", label: "Documentos" },
+  { id: "images", label: "Imagens" },
+  { id: "videos", label: "Vídeos" },
+  { id: "audio", label: "Áudio" },
+  { id: "archives", label: "Compactados" },
+  { id: "backups", label: "Backups e imagens de disco" },
+  { id: "email", label: "E-mail" },
+  { id: "databases", label: "Bancos de dados" },
+  { id: "executables", label: "Programas e instaladores" },
+  { id: "code", label: "Código-fonte" },
+  { id: "temporary", label: "Temporários e logs" },
+  { id: "other", label: "Outros" },
+];

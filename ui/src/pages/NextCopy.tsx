@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { ArrowRight, ChevronDown, ClipboardList, Copy, Eye, HardDrive, ShieldAlert, Trash2 } from "lucide-react";
+import { ArrowRight, CalendarClock, ChevronDown, ClipboardList, Copy, Eye, HardDrive, ShieldAlert, Trash2 } from "lucide-react";
+import { ScheduleDialog } from "@/components/schedule";
 import { api, ApiError, takeCopyPrefill } from "@/lib/api";
 import { useAsync, useThrottledEffect } from "@/lib/hooks";
 import { copyProfiles, verifyLevels } from "@/lib/i18n";
@@ -29,6 +30,7 @@ export default function NextCopyPage() {
   const [approved, setApproved] = useState(false);
   const [busy, setBusy] = useState<"plan" | "run" | null>(null);
   const [open, setOpen] = useState<TaskRecord | null>(null);
+  const [scheduling, setScheduling] = useState(false);
 
   const [prefillNote, setPrefillNote] = useState<string | null>(null);
   useEffect(() => {
@@ -210,6 +212,17 @@ export default function NextCopyPage() {
                 <ArrowRight /> {busy === "run" ? "Criando…" : mirror ? "Espelhar" : "Copiar"}
               </Button>
             </div>
+            <Button variant="ghost" size="sm" className="justify-self-start" disabled={!canRun || busy !== null} onClick={() => setScheduling(true)}>
+              <CalendarClock /> Agendar…
+            </Button>
+            <ScheduleDialog
+              open={scheduling}
+              onClose={() => setScheduling(false)}
+              kind="copy"
+              request={{ ...req, approved_deletions: mirror ? deletions : null }}
+              defaultTitle={`Cópia ${source} → ${dest}`}
+              note={mirror ? `Espelhamento agendado com ${deletions} exclusões aprovadas. Se, na hora da execução, houver mais exclusões, a tarefa será bloqueada.` : undefined}
+            />
           </CardBody>
         </Card>
 

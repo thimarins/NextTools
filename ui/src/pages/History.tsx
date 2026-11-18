@@ -12,6 +12,8 @@ import { ErrorNote, Loading } from "@/components/states";
 import { KindIcon, TaskDetailDialog, TaskStateBadge } from "@/components/tasks";
 import { Button } from "@/components/ui/button";
 import { Card, Empty, PageHeader, Select } from "@/components/ui/primitives";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/overlay";
+import { SchedulesPanel } from "@/components/schedule";
 
 const PAGE = 500;
 
@@ -25,7 +27,19 @@ const groups: Record<string, TaskState[] | undefined> = {
 
 const col = createColumnHelper<TaskRecord>();
 
+function ViewSwitch({ view, setView }: { view: string; setView: (v: string) => void }) {
+  return (
+    <Tabs value={view} onValueChange={setView}>
+      <TabsList>
+        <TabsTrigger value="tasks">Tarefas</TabsTrigger>
+        <TabsTrigger value="schedules">Agendamentos</TabsTrigger>
+      </TabsList>
+    </Tabs>
+  );
+}
+
 export default function HistoryPage() {
+  const [view, setView] = useState("tasks");
   const { tasks: live, version } = useLive();
   const [group, setGroup] = useState("all");
   const [kind, setKind] = useState("all");
@@ -96,6 +110,15 @@ export default function HistoryPage() {
   const virt = useVirtualizer({ count: rowModel.length, getScrollElement: () => parent.current, estimateSize: () => 44, overscan: 12 });
   const template = table.getVisibleLeafColumns().map((c) => (c.id === "title" ? "minmax(200px,1fr)" : `${c.getSize()}px`)).join(" ");
 
+  if (view === "schedules") {
+    return (
+      <>
+        <PageHeader title="Histórico" description="Agendamentos (executados enquanto o NextTool estiver aberto)." actions={<ViewSwitch view={view} setView={setView} />} />
+        <SchedulesPanel />
+      </>
+    );
+  }
+
   return (
     <>
       <PageHeader
@@ -103,6 +126,7 @@ export default function HistoryPage() {
         description="Todas as tarefas do NextSize e do NextCopy, deste computador."
         actions={
           <>
+            <ViewSwitch view={view} setView={setView} />
             <Select value={kind} onChange={(e) => setKind(e.target.value)} className="w-40">
               <option value="all">Todos os tipos</option>
               <option value="size_scan">Análises</option>

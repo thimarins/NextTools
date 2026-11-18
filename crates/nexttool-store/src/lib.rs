@@ -10,7 +10,7 @@ mod store;
 
 pub use logs::{init_logging, RotatingFile};
 pub use settings::{validate_setting, SettingError, SETTINGS};
-pub use store::{AppStore, NewTask, RecoveredTask, StoreError, TaskRecord};
+pub use store::{AppStore, NewTask, RecoveredTask, ScheduleRecord, StoreError, TaskRecord};
 
 use std::path::PathBuf;
 

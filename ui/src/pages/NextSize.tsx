@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
-import { FolderTree, HardDrive, Play } from "lucide-react";
+import { CalendarClock, FolderTree, HardDrive, Play } from "lucide-react";
+import { ScheduleDialog } from "@/components/schedule";
 import { api, ApiError } from "@/lib/api";
 import { useAsync, useThrottledEffect } from "@/lib/hooks";
 import { scanProfiles } from "@/lib/i18n";
@@ -25,6 +26,7 @@ export default function NextSizePage() {
   const [snapshot, setSnapshot] = useState<string | null>(null);
   const [external, setExternal] = useState("");
   const [tab, setTab] = useState("scans");
+  const [scheduling, setScheduling] = useState(false);
   const [compare, setCompare] = useState<[string, string] | null>(null);
 
   const tasks = useAsync(() => api.tasksList(undefined, 300), []);
@@ -72,9 +74,15 @@ export default function NextSizePage() {
                 ))}
               </Select>
             </Field>
-            <Button onClick={start} disabled={busy || !root.trim()}>
-              <Play /> {busy ? "Criando…" : "Iniciar análise"}
-            </Button>
+            <div className="flex gap-2">
+              <Button className="flex-1" onClick={start} disabled={busy || !root.trim()}>
+                <Play /> {busy ? "Criando…" : "Iniciar análise"}
+              </Button>
+              <Button variant="outline" onClick={() => setScheduling(true)} disabled={!root.trim()}>
+                <CalendarClock /> Agendar…
+              </Button>
+            </div>
+            <ScheduleDialog open={scheduling} onClose={() => setScheduling(false)} kind="scan" request={{ root, profile, snapshot: null }} defaultTitle={`Análise ${root}`} />
             <p className="text-xs text-muted-foreground">
               O resultado é salvo como snapshot (.nxs). Uma análise interrompida pode ser retomada sem perder o que já foi lido.
             </p>

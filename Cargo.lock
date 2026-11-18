@@ -2406,6 +2406,7 @@ name = "nextcopy-verify"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "crossbeam-channel",
  "nextcopy-core",
  "nexttool-core",
  "serde",
@@ -2518,6 +2519,7 @@ dependencies = [
 name = "nexttool-tasks"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "nextcopy-core",
  "nextcopy-robocopy",
  "nextcopy-verify",

@@ -129,6 +129,11 @@ pub async fn snapshot_compare(core: St<'_>, a: String, b: String, rel: Vec<Strin
 }
 
 #[tauri::command]
+pub async fn owners_lookup(core: St<'_>, paths: Vec<String>) -> ApiResult<Vec<crate::ipc::OwnerInfo>> {
+    blocking(core.inner(), move |c| c.owners_lookup(paths)).await
+}
+
+#[tauri::command]
 pub async fn snapshot_top_files(core: St<'_>, path: String, limit: Option<u32>) -> ApiResult<Vec<FileRow>> {
     blocking(core.inner(), move |c| c.snapshot_top_files(&path, limit)).await
 }
@@ -181,4 +186,24 @@ pub async fn settings_get(core: St<'_>) -> ApiResult<HashMap<String, String>> {
 #[tauri::command]
 pub async fn settings_set(core: St<'_>, key: String, value: String) -> ApiResult<()> {
     blocking(core.inner(), move |c| c.settings_set(&key, &value)).await
+}
+
+#[tauri::command]
+pub async fn schedules_list(core: St<'_>) -> ApiResult<Vec<crate::ipc::ScheduleView>> {
+    blocking(core.inner(), |c| c.schedules_list()).await
+}
+
+#[tauri::command]
+pub async fn schedule_create(core: St<'_>, title: String, kind: String, request: serde_json::Value, recurrence: nexttool_tasks::schedule::Recurrence) -> ApiResult<i64> {
+    blocking(core.inner(), move |c| c.schedule_create(title, &kind, request, recurrence)).await
+}
+
+#[tauri::command]
+pub async fn schedule_set_enabled(core: St<'_>, id: i64, enabled: bool) -> ApiResult<bool> {
+    blocking(core.inner(), move |c| c.schedule_set_enabled(id, enabled)).await
+}
+
+#[tauri::command]
+pub async fn schedule_delete(core: St<'_>, id: i64) -> ApiResult<bool> {
+    blocking(core.inner(), move |c| c.schedule_delete(id)).await
 }

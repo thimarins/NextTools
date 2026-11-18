@@ -183,6 +183,7 @@ export interface FileQuery {
   min_size?: number | null;
   max_size?: number | null;
   ext?: string | null;
+  category?: string | null;
   modified_before?: number | null;
   modified_after?: number | null;
   year?: number | null;
@@ -192,6 +193,7 @@ export interface FileQuery {
 }
 
 export interface Stats {
+  categories: { id: string; label: string; files: number; size: number }[];
   extensions: { ext: string; files: number; size: number }[];
   years: { year: number | null; files: number; size: number }[];
 }
@@ -251,3 +253,31 @@ export type Settings = {
   language: "pt-BR";
   max_running: number;
 };
+
+export interface OwnerInfo {
+  path: string;
+  owner: string | null;
+  sid: string | null;
+  orphan: boolean;
+  error: string | null;
+}
+
+export type Recurrence =
+  | { type: "once"; at: number }
+  | { type: "daily"; hour: number; minute: number }
+  | { type: "weekly"; days: number[]; hour: number; minute: number };
+
+export interface ScheduleView {
+  id: number;
+  title: string;
+  kind: "scan" | "copy";
+  request_json: string;
+  recurrence_json: string;
+  enabled: boolean;
+  created_at: number;
+  next_run_at: number | null;
+  last_run_at: number | null;
+  last_task_id: number | null;
+  last_result: string | null;
+  description: string;
+}

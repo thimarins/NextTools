@@ -1,5 +1,6 @@
 //! NextSize scan model and pipeline contracts. No I/O here.
 
+pub mod category;
 pub mod ext;
 pub mod issue;
 pub mod model;

@@ -50,3 +50,27 @@ IPC: 31 comandos, todos na allowlist, com o teste de consistência passando.
 - Fase 3: agendamento com o app aberto, prioridade de tarefas na UI, verificação rigorosa paralela.
 - Fase 4: diagnóstico e recomendações do NextCopy a partir das métricas.
 - Fase 6: empacotamento (NSIS/MSI e Portátil com WebView2 Fixed). Exige baixar ferramentas de build (WiX/NSIS) e o runtime Fixed Version.
+
+---
+
+# Atualização — Fase 2 concluída e início da Fase 3 (2026-11-18)
+
+## Novos itens
+
+| Item | Fase | Teste |
+|---|---|---|
+| Categorias de arquivo (ranking "Por categoria", filtro por categoria) — ADR-036 | 2 | `categories_from_extensions`, unicidade das extensões |
+| Proprietário sob demanda (página atual, ≤ 200, cache de SID) — ADR-037 | 2 | `own_file_has_current_user_as_owner`, `owners_lookup_is_bounded_and_reports_errors` |
+| Agendamento com o app aberto (única, diária, semanal; execuções perdidas → alerta) — ADR-038 | 3 | `daily_weekly_once`, `validation`, `schedules_run_when_due_and_missed_runs_are_not_executed_late` + app real |
+| Verificação rigorosa em paralelo (173 s → 51 s em 100 mil arquivos) — ADR-039 | 3 | testes de verificação existentes + benchmark |
+
+**Totais:** 80 testes passando, 4 de campo preparados, 0 falhas. IPC com 36 comandos, todos na allowlist.
+
+## Verificação no app real
+
+Agendamento criado pelo formulário do NextSize ("Agendar…", uma vez, daqui a ~1 min). Na hora marcada, o laço de eventos criou a tarefa #8, que terminou concluída; o agendamento passou para "sem próxima execução".
+
+## Pendências que dependem de você
+
+- SMB/NAS real (concorrência adaptativa, queda de rede), volume pequeno (destino sem espaço), log do Robocopy em pt-BR, VMs Windows Server.
+- **Empacotamento (Fase 6):** gerar instaladores MSI/NSIS e a versão Portátil exige **baixar** ferramentas (WiX/NSIS, via Tauri) e o WebView2 Fixed Version (Microsoft). Vou pedir sua autorização antes desses downloads.

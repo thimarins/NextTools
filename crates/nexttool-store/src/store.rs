@@ -40,6 +40,12 @@ CREATE TABLE IF NOT EXISTS alerts(
 );
 CREATE INDEX IF NOT EXISTS idx_alerts_fp ON alerts(fingerprint, acknowledged);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS schedules(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL, kind TEXT NOT NULL, request TEXT NOT NULL, recurrence TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL,
+  next_run_at INTEGER, last_run_at INTEGER, last_task_id INTEGER, last_result TEXT
+);
 "#;
 
 #[derive(Debug, thiserror::Error)]
@@ -132,6 +138,37 @@ fn row_task(r: &Row) -> rusqlite::Result<TaskRecord> {
         error_kind: r.get("error_kind")?,
         error_message: r.get("error_message")?,
         child_pid: r.get::<_, Option<i64>>("child_pid")?.map(|v| v as u32),
+    })
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ScheduleRecord {
+    pub id: i64,
+    pub title: String,
+    pub kind: String,
+    pub request_json: String,
+    pub recurrence_json: String,
+    pub enabled: bool,
+    pub created_at: i64,
+    pub next_run_at: Option<i64>,
+    pub last_run_at: Option<i64>,
+    pub last_task_id: Option<i64>,
+    pub last_result: Option<String>,
+}
+
+fn row_schedule(r: &Row) -> rusqlite::Result<ScheduleRecord> {
+    Ok(ScheduleRecord {
+        id: r.get("id")?,
+        title: r.get("title")?,
+        kind: r.get("kind")?,
+        request_json: r.get("request")?,
+        recurrence_json: r.get("recurrence")?,
+        enabled: r.get::<_, i64>("enabled")? != 0,
+        created_at: r.get("created_at")?,
+        next_run_at: r.get("next_run_at")?,
+        last_run_at: r.get("last_run_at")?,
+        last_task_id: r.get("last_task_id")?,
+        last_result: r.get("last_result")?,
     })
 }
 
@@ -471,6 +508,49 @@ impl AppStore {
 
     pub fn ack_alert(&self, id: i64) -> Result<bool, StoreError> {
         Ok(self.conn.execute("UPDATE alerts SET acknowledged=1 WHERE id=?1", [id])? > 0)
+    }
+
+    // ------------------------------------------------------------ schedules
+
+    pub fn schedule_create(&self, title: &str, kind: &str, request_json: &str, recurrence_json: &str, next_run_at: Option<i64>) -> Result<i64, StoreError> {
+        self.conn.execute(
+            "INSERT INTO schedules(title,kind,request,recurrence,enabled,created_at,next_run_at) VALUES(?1,?2,?3,?4,1,?5,?6)",
+            params![title, kind, request_json, recurrence_json, now_unix(), next_run_at],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn schedules(&self) -> Result<Vec<ScheduleRecord>, StoreError> {
+        let mut st = self.conn.prepare("SELECT * FROM schedules ORDER BY id DESC LIMIT 500")?;
+        let rows = st.query_map([], row_schedule)?.collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// Enabled schedules whose next run is at or before `now`.
+    pub fn schedules_due(&self, now: i64) -> Result<Vec<ScheduleRecord>, StoreError> {
+        let mut st = self.conn.prepare("SELECT * FROM schedules WHERE enabled=1 AND next_run_at IS NOT NULL AND next_run_at<=?1 ORDER BY next_run_at LIMIT 50")?;
+        let rows = st.query_map([now], row_schedule)?.collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn schedule_mark(&self, id: i64, ran_at: Option<i64>, task_id: Option<i64>, result: &str, next_run_at: Option<i64>) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE schedules SET last_run_at=COALESCE(?2,last_run_at), last_task_id=COALESCE(?3,last_task_id), last_result=?4, next_run_at=?5 WHERE id=?1",
+            params![id, ran_at, task_id, result, next_run_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn schedule_set_enabled(&self, id: i64, enabled: bool, next_run_at: Option<i64>) -> Result<bool, StoreError> {
+        Ok(self.conn.execute("UPDATE schedules SET enabled=?2, next_run_at=?3 WHERE id=?1", params![id, enabled, next_run_at])? > 0)
+    }
+
+    pub fn schedule_get(&self, id: i64) -> Result<Option<ScheduleRecord>, StoreError> {
+        Ok(self.conn.query_row("SELECT * FROM schedules WHERE id=?1", [id], row_schedule).optional()?)
+    }
+
+    pub fn schedule_delete(&self, id: i64) -> Result<bool, StoreError> {
+        Ok(self.conn.execute("DELETE FROM schedules WHERE id=?1", [id])? > 0)
     }
 
     // ------------------------------------------------------------- settings

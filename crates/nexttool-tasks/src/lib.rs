@@ -7,6 +7,7 @@ pub mod monitor;
 pub mod resources;
 pub mod retry;
 pub mod runners;
+pub mod schedule;
 
 pub use manager::{TaskControl, TaskCtx, TaskManager, RunOutcome, TaskRunner};
 pub use runners::{CopySpec, SizeScanSpec, TaskSpec};

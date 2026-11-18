@@ -9,6 +9,7 @@ license.workspace = true
 nexttool-core.workspace = true
 nextcopy-core.workspace = true
 blake3.workspace = true
+crossbeam-channel.workspace = true
 serde.workspace = true
 
 [dev-dependencies]

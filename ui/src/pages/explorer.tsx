@@ -16,11 +16,13 @@ import {
   Search,
   Square,
   TriangleAlert,
+  User,
 } from "lucide-react";
 import { toast } from "sonner";
 import { api, ApiError, nextRequestId, setCopyPrefill } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
-import type { DirRow, FileQuery, FileRow, Paged, Summary } from "@/lib/types";
+import type { DirRow, FileQuery, FileRow, OwnerInfo, Paged, Summary } from "@/lib/types";
+import { fileCategories } from "@/lib/i18n";
 import { cn, formatBytes, formatCount, formatDate, formatDuration } from "@/lib/utils";
 import { useSettings } from "@/lib/settings";
 import { ErrorNote, Loading } from "@/components/states";
@@ -477,6 +479,9 @@ function FiltersPane({ path, onOpenDir }: { path: string; onOpenDir: (id: number
   const { settings } = useSettings();
   const base = settings.units === "decimal" ? 1000 : 1024;
   const [ext, setExt] = useState("");
+  const [category, setCategory] = useState("");
+  const [owners, setOwners] = useState<Map<string, OwnerInfo> | null>(null);
+  const [loadingOwners, setLoadingOwners] = useState(false);
   const [name, setName] = useState("");
   const [minV, setMinV] = useState("");
   const [minU, setMinU] = useState("gb");
@@ -497,6 +502,7 @@ function FiltersPane({ path, onOpenDir }: { path: string; onOpenDir: (id: number
   const run = async (p: number) => {
     const q: FileQuery = {
       ext: ext.trim() || null,
+      category: category || null,
       name_contains: name.trim() || null,
       min_size: bytes(minV, minU),
       max_size: bytes(maxV, maxU),
@@ -514,7 +520,10 @@ function FiltersPane({ path, onOpenDir }: { path: string; onOpenDir: (id: number
     setError(null);
     try {
       const r = await api.snapshotQuery(path, q, rid);
-      if (r.request_id === latest.current) setRes(r);
+      if (r.request_id === latest.current) {
+        setRes(r);
+        setOwners(null);
+      }
     } catch (e) {
       if (latest.current === rid) setError(e instanceof ApiError ? e : new ApiError("internal", String(e)));
     } finally {
@@ -546,6 +555,16 @@ function FiltersPane({ path, onOpenDir }: { path: string; onOpenDir: (id: number
         >
           <Field label="Extensão" hint="Ex.: bak, mp4, pst">
             <Input value={ext} onChange={(e) => setExt(e.target.value)} placeholder="qualquer" />
+          </Field>
+          <Field label="Categoria" hint="Ignorada se a extensão for informada.">
+            <Select value={category} onChange={(e) => setCategory(e.target.value)}>
+              <option value="">qualquer</option>
+              {fileCategories.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.label}
+                </option>
+              ))}
+            </Select>
           </Field>
           <Field label="Nome contém">
             <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="qualquer" />
@@ -609,6 +628,29 @@ function FiltersPane({ path, onOpenDir }: { path: string; onOpenDir: (id: number
         {!res && !running && !errMsg && <p className="px-4 py-10 text-center text-sm text-muted-foreground">Defina os filtros e clique em Buscar.</p>}
         {res && (
           <>
+            {res.rows.length > 0 && (
+              <div className="flex items-center gap-2 border-b px-3 py-1.5 text-xs text-muted-foreground">
+                <span className="flex-1">O proprietário é consultado no disco agora (estado atual), só para esta página.</span>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={loadingOwners || !!owners}
+                  onClick={async () => {
+                    setLoadingOwners(true);
+                    try {
+                      const r = await api.ownersLookup(res.rows.map((x) => x.path));
+                      setOwners(new Map(r.map((o) => [o.path, o])));
+                    } catch (e) {
+                      toast.error("Falha ao consultar proprietários", { description: e instanceof ApiError ? e.message : String(e) });
+                    } finally {
+                      setLoadingOwners(false);
+                    }
+                  }}
+                >
+                  {loadingOwners ? <Loader2 className="animate-spin" /> : <User />} Mostrar proprietários
+                </Button>
+              </div>
+            )}
             <div className="h-[calc(100vh-380px)] min-h-[300px] overflow-auto">
               <table className="w-full table-fixed text-sm">
                 <colgroup>
@@ -630,6 +672,7 @@ function FiltersPane({ path, onOpenDir }: { path: string; onOpenDir: (id: number
                     <tr key={r.id} className="h-[var(--row-h)] border-t hover:bg-muted/40">
                       <td className="truncate px-3" title={r.path}>
                         <FileName path={r.path} />
+                        {owners && <OwnerTag o={owners.get(r.path)} />}
                       </td>
                       <td className="px-3 text-right tabular-nums whitespace-nowrap">{formatBytes(r.size)}</td>
                       <td className="px-3 text-right whitespace-nowrap text-muted-foreground">{formatDate(r.mtime)}</td>
@@ -660,6 +703,17 @@ function FiltersPane({ path, onOpenDir }: { path: string; onOpenDir: (id: number
   );
 }
 
+function OwnerTag({ o }: { o?: OwnerInfo }) {
+  if (!o) return null;
+  if (o.error) return <span className="ml-1 text-[11px] text-warning">proprietário indisponível ({o.error.split(":")[0]})</span>;
+  return (
+    <span className="ml-1 inline-flex items-center gap-1 text-[11px] text-muted-foreground" title={o.sid ?? undefined}>
+      <User className="size-3" /> {o.owner}
+      {o.orphan && <Badge tone="warning">conta inexistente</Badge>}
+    </span>
+  );
+}
+
 /** File name first (always visible), folder after it, muted. */
 function FileName({ path }: { path: string }) {
   const i = path.lastIndexOf("\\");
@@ -687,6 +741,10 @@ function Rankings({ path, total, onOpenDir, finalized }: { path: string; total: 
           Maiores pastas {!finalized && <span className="font-normal text-muted-foreground">(conteúdo direto — dados parciais)</span>}
         </h3>
         <TopDirs path={path} onOpenDir={onOpenDir} />
+      </Card>
+      <Card>
+        <h3 className="px-[var(--card-pad)] pt-[var(--card-pad)] pb-3 text-sm font-semibold">Por categoria</h3>
+        {finalized ? <StatsTable path={path} kind="categories" total={total} /> : <p className="px-[var(--card-pad)] pb-[var(--card-pad)] text-sm text-muted-foreground">Disponível após a finalização da análise.</p>}
       </Card>
       <Card>
         <h3 className="px-[var(--card-pad)] pt-[var(--card-pad)] pb-3 text-sm font-semibold">Por extensão</h3>
@@ -774,16 +832,18 @@ function TopDirs({ path, onOpenDir }: { path: string; onOpenDir: (id: number) =>
   );
 }
 
-function StatsTable({ path, kind, total }: { path: string; kind: "ext" | "years"; total: number }) {
+function StatsTable({ path, kind, total }: { path: string; kind: "ext" | "years" | "categories"; total: number }) {
   const { data, error } = useAsync(() => api.snapshotStats(path), [path]);
   if (error) return <ErrorNote error={error} />;
   if (!data) return <Loading />;
   const rows =
     kind === "ext"
       ? data.extensions.map((e) => ({ k: e.ext === "(sem extensão)" ? e.ext : `.${e.ext}`, files: e.files, size: e.size }))
-      : data.years.map((y) => ({ k: y.year == null ? "(sem data)" : String(y.year), files: y.files, size: y.size })).reverse();
+      : kind === "categories"
+        ? data.categories.map((c) => ({ k: c.label, files: c.files, size: c.size }))
+        : data.years.map((y) => ({ k: y.year == null ? "(sem data)" : String(y.year), files: y.files, size: y.size })).reverse();
   return (
-    <Table head={[kind === "ext" ? "Extensão" : "Ano", "Arquivos", "Tamanho", "Participação"]}>
+    <Table head={[kind === "ext" ? "Extensão" : kind === "categories" ? "Categoria" : "Ano", "Arquivos", "Tamanho", "Participação"]}>
       {rows.map((r) => (
         <tr key={r.k}>
           <td className="px-3 font-mono text-[12.5px]">{r.k}</td>

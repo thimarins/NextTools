@@ -200,3 +200,12 @@ Observação metodológica: o "antes" usou 8 threads de geração sintética; o 
 | 2 | 15,1 s | 11,0 s | 23,1 s | **26,1 s** | ~38,1 s |
 
 O tempo total é o mesmo, mas o snapshot pode ser navegado ~12 s antes (−33%). Projeção para 111 M a partir dos tempos medidos por índice (§8.4): utilizável após ~134 s de finalização em vez de 312 s. **Projeção, não medida.**
+
+## 10. Verificação do NextCopy (ADR-039) — 100 mil arquivos pequenos (synthetic-100k), mesmo SSD
+
+| Verificação | Antes (sequencial) | Depois | Resultado |
+|---|---|---|---|
+| Rigorosa (BLAKE3 de origem e destino) | 173,1 s | **50,7 s** (4 threads de hash) | 100.000 conferidos, 0 divergências |
+| Padrão (existência + tamanho + data) | 8,3 s | 6,7 s | 100.000 conferidos |
+
+Com arquivos pequenos o custo é dominado pela abertura de arquivos (com o Defender ativo); com arquivos grandes, o limite passa a ser a leitura do disco.

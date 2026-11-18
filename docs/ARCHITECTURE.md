@@ -318,7 +318,7 @@ Princípios:
 - Erros chegam como `{ code, message }`. Códigos estáveis: `invalid_path`, `not_found`, `invalid_argument`, `invalid_job`, `invalid_state`, `approval_required`, `cancelled`, `time_limit`, `not_finalized`, `store`, `snapshot`, `engine`, `internal`, `unsupported`.
 - **Allowlist (ADR-018):** cada comando é uma permissão explícita na capability. Não há acesso genérico a arquivos, shell ou rede no webview.
 
-### Comandos (31)
+### Comandos (36)
 
 | Comando | Entrada | Saída |
 |---|---|---|
@@ -339,6 +339,8 @@ Princípios:
 | `snapshot_import` / `snapshot_export` | `src` / `path, dest` | importação validada (assinatura, schema, `quick_check`) / exportação consistente via `VACUUM INTO`, sem sobrescrever |
 | `snapshot_build_indexes` | `path` | constrói índices de filtro pendentes |
 | `snapshot_compare` | `a, b, rel[], limit` | comparação de um nível por caminho (ADR-032) |
+| `owners_lookup` | `paths[]` (≤ 200) | proprietário atual de cada caminho (ADR-037) |
+| `schedules_list` / `schedule_create` / `schedule_set_enabled` / `schedule_delete` | título, tipo (scan/copy), requisição, recorrência | agendamentos (ADR-038) |
 | `snapshot_top_files` / `snapshot_top_dirs` | `path, limit` | `FileRow[]` / `DirRow[]` |
 | `snapshot_query` | `path, query: { min_size, max_size, ext, modified_before/after, year, name_contains, offset, limit }, requestId` | `{ request_id, rows, elapsed_ms }`; tempo limite de 30 s |
 | `snapshot_cancel_query` | `requestId` | `bool` |

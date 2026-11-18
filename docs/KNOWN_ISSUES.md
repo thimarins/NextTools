@@ -22,7 +22,8 @@
 5. Com `/NFL` (perfil Migração), o progresso por arquivo não existe durante a execução: o monitoramento usa os contadores de I/O do processo e o resumo final.
 6. A verificação padrão compara `mtime` com tolerância de 2 s. Destinos FAT/exFAT ou alguns NAS podem arredondar de forma diferente.
 7. A pilha de diretórios da verificação cresce com a largura da árvore. Diretórios com milhões de subdiretórios podem usar dezenas de MB. Reutilizar a fronteira com spill do NextSize está previsto.
-8. Agendamento: só com o app aberto (v1). O Agendador de Tarefas do Windows será opcional e com autorização explícita.
+8. Agendamento implementado só com o app aberto (v1, ADR-038). Execuções perdidas geram alerta e não são feitas depois. O Agendador de Tarefas do Windows fica para o futuro, como opção explícita.
+10. O proprietário exibido é o **atual** (consultado no disco no momento), não o do momento da análise; arquivos removidos depois da análise aparecem como "indisponível".
 9. Origem ou destino sem espaço, autenticação expirada e desconexão SMB **ainda não foram testados** em ambiente real (só a classificação por código).
 
 ## Desktop (Fase 1)

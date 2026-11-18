@@ -217,3 +217,24 @@ Canvas com layout *squarified*. Mostra as até 300 maiores entradas da pasta atu
 - Discos locais mantêm concorrência fixa.
 
 Testes: lógica pura (converge para o ótimo de um servidor simulado, a partir de cima e de baixo) e motor com servidor simulado (recua de 8 threads, totais exatos). **Ainda não validado num SMB real.**
+
+### ADR-036 — Categorias por extensão
+Doze categorias fixas e documentadas (`nextsize_core::category`), sem inspecionar o conteúdo dos arquivos. Cada extensão pertence a no máximo uma categoria (teste); `ts` fica em Código-fonte, por ambiguidade com vídeo MPEG-TS. As estatísticas por categoria são derivadas dos agregados por extensão, sem nova passada sobre os arquivos. O filtro por categoria vira `ext IN (…)`.
+
+### ADR-037 — Proprietário sob demanda
+- O dono não é coletado na varredura (ADR-008).
+- A UI consulta o proprietário **atual** (no disco, agora) apenas da página exibida, no máximo 200 caminhos por chamada.
+- Usa `GetNamedSecurityInfoW(OWNER)` (somente leitura) e `LookupAccountSidW`, com cache de SID→nome limitado a 10 mil entradas.
+- SIDs sem conta são exibidos como "conta inexistente".
+
+## Fase 3 — NextCopy e tarefas
+
+### ADR-038 — Agendamento (v1: com o app aberto)
+- Agendamentos no `app.db`, com recorrência única, diária ou semanal em **horário local** (`chrono`; horários inexistentes no horário de verão são pulados, e horários ambíguos usam a primeira ocorrência).
+- O laço de eventos verifica a cada 5 s e cria a tarefa pelo mesmo caminho e validação de uma execução imediata.
+- **Execuções perdidas** (atraso > 2 min, ou seja, o app estava fechado) **não são executadas depois**: geram alerta e passam para a próxima ocorrência.
+- Espelhamento agendado guarda as exclusões aprovadas; na execução, a reverificação bloqueia se houver mais.
+- O Agendador de Tarefas do Windows continua fora da v1 (opcional futuro, com autorização explícita).
+
+### ADR-039 — Verificação rigorosa em paralelo
+Hash BLAKE3 num pool fixo de até 4 threads com fila limitada (256 tarefas); arquivos em processamento ≤ fila + threads. Resultados idênticos aos da versão sequencial (mesmos testes). Medido: 100 mil arquivos pequenos, 173 s → 51 s.

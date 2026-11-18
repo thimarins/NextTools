@@ -89,8 +89,13 @@ pub fn run_scan(
     let t0 = Instant::now();
     progress.set_state(ScanState::Preparing);
     let tuning = opts.tuning.clone();
-    // Never spawn more workers than the control can ever allow.
-    let threads = tuning.threads.max(1).min(control.max());
+    // Never spawn more workers than the control can ever allow. Adaptive mode
+    // spawns up to the ceiling and gates them with `set_concurrency`.
+    let threads = tuning.spawn_threads().min(control.max());
+    if tuning.adaptive {
+        control.set_concurrency(tuning.threads.clamp(1, threads));
+    }
+    progress.concurrency.store(control.concurrency().min(threads) as u64, Relaxed);
     let spill_dir = opts.spill_dir.clone().unwrap_or_else(std::env::temp_dir);
 
     let ctx = Arc::new(Ctx {
@@ -178,6 +183,14 @@ pub fn run_scan(
     }
     drop(tx);
 
+    // Adaptive concurrency controller (network sources).
+    let stop_ctl = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let controller = tuning.adaptive.then(|| {
+        let (c, p, stop) = (control.clone(), progress.clone(), stop_ctl.clone());
+        let interval = Duration::from_millis(tuning.adaptive_interval_ms.max(50));
+        std::thread::spawn(move || adaptive_loop(c, p, stop, threads, interval))
+    });
+
     // Pause state mirror for the UI.
     let mut joined = 0;
     while joined < workers.len() {
@@ -199,6 +212,10 @@ pub fn run_scan(
         if w.join().is_err() {
             ctx.set_fatal("um thread de varredura terminou com pânico".into());
         }
+    }
+    stop_ctl.store(true, Relaxed);
+    if let Some(h) = controller {
+        let _ = h.join();
     }
     let sink_back = writer.join();
     let scan_ms = t0.elapsed().as_millis() as u64;
@@ -248,6 +265,37 @@ pub fn run_scan(
         fatal_error,
         scan_ms,
         finish_ms: t1.elapsed().as_millis() as u64,
+    }
+}
+
+fn adaptive_loop(control: Arc<ScanControl>, progress: Arc<ScanProgress>, stop: Arc<std::sync::atomic::AtomicBool>, max: usize, interval: Duration) {
+    let mut a = crate::adaptive::Adaptive::new(control.concurrency(), max);
+    let (mut dirs0, mut err0, mut blocked0) = (progress.dirs.load(Relaxed), progress.net_errors.load(Relaxed), progress.send_blocked_ns.load(Relaxed));
+    let mut t0 = Instant::now();
+    while !stop.load(Relaxed) {
+        // Sleep in small steps so the scan end is not delayed.
+        let wake = Instant::now() + interval;
+        while Instant::now() < wake && !stop.load(Relaxed) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if stop.load(Relaxed) {
+            break;
+        }
+        let (dirs, errs, blocked) = (progress.dirs.load(Relaxed), progress.net_errors.load(Relaxed), progress.send_blocked_ns.load(Relaxed));
+        let dt = t0.elapsed().as_secs_f64();
+        t0 = Instant::now();
+        if control.is_paused() || control.is_cancelled() {
+            (dirs0, err0, blocked0) = (dirs, errs, blocked);
+            continue;
+        }
+        let rate = (dirs - dirs0) as f64 / dt.max(1e-3);
+        // Writer saturated: workers spent > 30% of the interval blocked on the queue.
+        let saturated = (blocked - blocked0) as f64 / 1e9 > 0.3 * dt * a.current as f64;
+        let decision = a.step(rate, errs - err0, saturated);
+        (dirs0, err0, blocked0) = (dirs, errs, blocked);
+        control.set_concurrency(a.current);
+        progress.concurrency.store(a.current as u64, Relaxed);
+        tracing::debug!(?decision, threads = a.current, rate, "adaptive concurrency");
     }
 }
 
@@ -384,6 +432,9 @@ fn process_dir(ctx: &Ctx, tx: &Sender<SinkMsg>, task: DirTask) -> bool {
         Ok(()) => false,
         Err(e) => {
             ctx.progress.issues.fetch_add(1, Relaxed);
+            if matches!(e.kind, ErrorKind::Network | ErrorKind::Timeout) {
+                ctx.progress.net_errors.fetch_add(1, Relaxed);
+            }
             // Directory removed while scanning: a warning, not an error.
             let severity = if e.kind == ErrorKind::NotFound { Severity::Warning } else { Severity::Error };
             let issue = ScanIssue {

@@ -78,6 +78,10 @@ pub struct ScanProgress {
     /// Total time the writer waited for data. High values = enumeration
     /// (disk/network) is the bottleneck.
     pub writer_wait_ns: AtomicU64,
+    /// Enumeration errors classified as network/timeout (adaptive control).
+    pub net_errors: AtomicU64,
+    /// Current number of active enumeration threads.
+    pub concurrency: AtomicU64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -92,6 +96,7 @@ pub struct ProgressSnapshot {
     pub rows_committed: u64,
     pub commits: u64,
     pub queued_chunks: u64,
+    pub concurrency: u64,
 }
 
 impl ScanProgress {
@@ -115,6 +120,7 @@ impl ScanProgress {
             rows_committed: self.rows_committed.load(Relaxed),
             commits: self.commits.load(Relaxed),
             queued_chunks: self.queued_chunks.load(Relaxed),
+            concurrency: self.concurrency.load(Relaxed),
         }
     }
 }

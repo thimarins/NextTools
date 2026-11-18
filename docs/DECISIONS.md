@@ -170,3 +170,50 @@ Por extensão (≤ 200 mil chaves) e por ano: memória limitada.
 - A lista da pasta é paginada (200 por página) com contagem total (`snapshot_dir_info`).
 - Filtros: 100 resultados por página, cancelamento por `request_id` e respostas obsoletas descartadas.
 - Nenhuma lista completa cruza o IPC.
+
+---
+
+## Fase 2 — NextSize avançado
+
+### ADR-030 — Índices de filtro adiados
+**Contexto:** a 111 M registros, os índices `ext` e `mtime` respondiam por 57% da finalização.
+**Decisão:** a finalização tem duas fases.
+1. **Essencial** (índices de pastas, `parent` e `size`, roll-up, agregados, ANALYZE) → o snapshot é marcado como concluído e utilizável.
+2. **Filtros** (`ext`, `mtime`) → `meta.filter_indexes = ready`.
+
+Enquanto o marcador está `pending`, consultas por extensão ou data fazem varredura com tempo limite. Se o processo parar na fase 2, `build_filter_indexes` (botão na UI, idempotente) completa depois.
+**Medido:** a 11,1 M, o snapshot fica utilizável ~33% mais cedo (24–26 s contra 36–38 s).
+
+### ADR-031 — Gestão de snapshots
+- Catálogo da pasta de snapshots do app, lendo só o `meta`.
+- Rótulo gravado no `meta` (o arquivo não é renomeado, então as referências de tarefas continuam válidas).
+- Exportação via `VACUUM INTO`: cópia consistente mesmo com WAL, compacta, sem sobrescrever.
+- Importação só após validar assinatura, schema e `quick_check`.
+- **Exclusão permanente** apenas de `.nxs` válidos dentro da pasta do app, não usados por tarefas ativas, com o nome do arquivo digitado pelo usuário. Os arquivos analisados nunca são tocados.
+
+### ADR-032 — Comparação preguiçosa por caminho
+**Contexto:** os IDs dos nós diferem entre snapshots.
+**Decisão:**
+- As pastas são casadas por nome sob o mesmo caminho relativo, um nível por vez, como na árvore.
+- Cada nível lê no máximo 20.000 subpastas por lado; acima disso, mostra o aviso "comparação parcial".
+- O resultado vem ordenado pela maior variação absoluta, e o conteúdo direto aparece como a linha "(arquivos nesta pasta)".
+
+Memória O(subpastas do nível), nunca O(snapshot).
+
+### ADR-033 — Treemap agregado
+Canvas com layout *squarified*. Mostra as até 300 maiores entradas da pasta atual; o restante vira "Outros", usando o total real da pasta. Os dados vêm de `snapshot_list_dir` (paginado), nunca do índice inteiro. Clicar numa pasta entra nela.
+
+### ADR-034 — NextSize → NextCopy por referência
+"Copiar com NextCopy" envia **apenas o caminho da pasta** (referência), nunca uma lista de arquivos. O NextCopy avisa que o conteúdo pode ter mudado desde a análise e orienta a gerar a Prévia, que enumera o estado atual. A validação normal do `CopyJob` se aplica.
+
+### ADR-035 — Concorrência adaptativa em origens de rede
+- Ativa apenas para origens remotas (UNC ou unidade mapeada).
+- Começa conservadora (Econômico 2, Equilibrado 4, Rápido 8) com teto de 4, 16 e 32 threads.
+- A cada intervalo (2 s), o controlador:
+  - testa ±1 thread e mantém o aumento só se a taxa de pastas/s subir ≥ 5%;
+  - mantém a redução se a taxa cair no máximo 3% (mesmo resultado com menos carga no servidor);
+  - **corta pela metade** ao ver erros de rede ou timeout;
+  - não cresce enquanto o escritor estiver saturado.
+- Discos locais mantêm concorrência fixa.
+
+Testes: lógica pura (converge para o ótimo de um servidor simulado, a partir de cima e de baixo) e motor com servidor simulado (recua de 8 threads, totais exatos). **Ainda não validado num SMB real.**

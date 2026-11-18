@@ -298,6 +298,93 @@ fn crash_during_finalization_is_recoverable() {
     assert_eq!(s.ext_stats(100).unwrap().iter().map(|e| e.files).sum::<u64>(), exp.files);
 }
 
+#[test]
+fn filter_indexes_are_deferred_and_recoverable() {
+    let t = tempfile::tempdir().unwrap();
+    let root = t.path().join("tree");
+    build_tree(&root);
+    let db = t.path().join("d.nxs");
+    assert_eq!(scan(&opts(&root, Backend::Native, 64), &db).outcome.state, ScanState::Completed);
+    {
+        let s = Snapshot::open(&db).unwrap();
+        let sum = s.summary().unwrap();
+        assert!(sum.complete && sum.finalized && sum.filter_indexes_ready);
+        assert!(sum.usable_ms.is_some());
+    }
+    // Crash after the snapshot became usable but before filter indexes finished.
+    {
+        let c = rusqlite::Connection::open(&db).unwrap();
+        c.execute_batch("DROP INDEX idx_files_ext; DROP INDEX idx_files_mtime; UPDATE meta SET value='pending' WHERE key='filter_indexes';").unwrap();
+    }
+    {
+        let s = Snapshot::open(&db).unwrap();
+        let sum = s.summary().unwrap();
+        assert!(sum.complete && !sum.filter_indexes_ready, "usable, filters pending");
+        let q = s.query_files(&FileQuery { ext: Some("bak".into()), limit: 1000, ..Default::default() }).unwrap();
+        assert_eq!(q.len(), 200, "filters still work (time-limited scan)");
+    }
+    nextsize_index::build_filter_indexes(&db).unwrap();
+    let s = Snapshot::open(&db).unwrap();
+    assert!(s.summary().unwrap().filter_indexes_ready);
+    assert!(s.verify().unwrap().is_empty());
+}
+
+#[test]
+fn compare_two_real_scans_by_path() {
+    let t = tempfile::tempdir().unwrap();
+    let root = t.path().join("tree");
+    build_tree(&root);
+    let (a, b) = (t.path().join("a.nxs"), t.path().join("b.nxs"));
+    let o = opts(&root, Backend::Native, 64);
+    scan(&o, &a);
+    // Changes: d01 grows by 1 MB (new file in d01\sub), d02 removed, "novo" added.
+    fs::write(root.join("d01").join("sub").join("grande.bin"), vec![0u8; 1 << 20]).unwrap();
+    fs::remove_dir_all(root.join("d02")).unwrap();
+    fs::create_dir(root.join("novo")).unwrap();
+    fs::write(root.join("novo").join("x.dat"), vec![1u8; 5000]).unwrap();
+    scan(&o, &b);
+    let (sa, sb) = (Snapshot::open(&a).unwrap(), Snapshot::open(&b).unwrap());
+    let lvl = nextsize_index::compare_children(&sa, &sb, &[], 100).unwrap();
+    assert!(lvl.a_found && lvl.b_found);
+    let row = |n: &str| lvl.rows.iter().find(|r| r.name == n).unwrap_or_else(|| panic!("{n} missing: {:?}", lvl.rows));
+    assert_eq!(row("d01").status, "grew");
+    assert_eq!(row("d01").delta, 1 << 20);
+    assert_eq!(row("d02").status, "removed");
+    assert_eq!(row("novo").status, "added");
+    assert_eq!(row("novo").delta, 5000);
+    assert_eq!(row("d03").status, "same");
+    assert_eq!(lvl.rows[0].name, "d01", "largest change first");
+    assert_eq!(lvl.b_total.unwrap() as i64 - lvl.a_total.unwrap() as i64, lvl.rows.iter().map(|r| r.delta).sum::<i64>());
+    // Drill down.
+    let sub = nextsize_index::compare_children(&sa, &sb, &["d01".into()], 100).unwrap();
+    assert_eq!(sub.rows[0].name, "sub");
+    assert_eq!(sub.rows[0].delta, 1 << 20);
+    let gone = nextsize_index::compare_children(&sa, &sb, &["d02".into()], 100).unwrap();
+    assert!(gone.a_found && !gone.b_found);
+}
+
+#[test]
+fn catalog_label_and_import_validation() {
+    let t = tempfile::tempdir().unwrap();
+    let root = t.path().join("tree");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("a.txt"), b"x").unwrap();
+    let dir = t.path().join("snaps");
+    fs::create_dir_all(&dir).unwrap();
+    let db = dir.join("s1.nxs");
+    scan(&opts(&root, Backend::Native, 64), &db);
+    fs::write(dir.join("lixo.nxs"), b"not sqlite at all").unwrap();
+    nextsize_index::set_label(&db, "Antes da limpeza\u{7}").unwrap();
+    let list = nextsize_index::list_snapshots(&dir, 50);
+    assert_eq!(list.len(), 2);
+    let good = list.iter().find(|e| e.file_name == "s1.nxs").unwrap();
+    assert_eq!(good.label.as_deref(), Some("Antes da limpeza"), "control chars stripped");
+    assert_eq!(good.files, Some(1));
+    assert!(list.iter().find(|e| e.file_name == "lixo.nxs").unwrap().invalid.is_some());
+    assert!(nextsize_index::validate_for_import(&db).is_ok());
+    assert!(nextsize_index::validate_for_import(&dir.join("lixo.nxs")).is_err());
+}
+
 #[cfg(windows)]
 #[test]
 fn junction_loop_is_not_followed_and_access_denied_is_reported() {

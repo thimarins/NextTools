@@ -132,6 +132,8 @@ pub struct DirInfo {
     pub chain: Vec<(i64, String)>,
     pub subdirs: u64,
     pub files: u64,
+    /// Total size (recursive when finalized).
+    pub size: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -297,7 +299,91 @@ impl Core {
         let s = self.open_snapshot(path)?;
         let chain = s.dir_chain(dir_id)?;
         let (subdirs, files) = s.child_counts(dir_id)?;
-        Ok(DirInfo { chain, subdirs, files })
+        let size = s.dir_size(dir_id)?;
+        Ok(DirInfo { chain, subdirs, files, size })
+    }
+
+    fn snapshots_dir(&self) -> PathBuf {
+        self.data_dir.join("snapshots")
+    }
+
+    /// Catalog of snapshots in the app's snapshots folder (meta only).
+    pub fn snapshots_list(&self) -> ApiResult<Vec<nextsize_index::SnapshotEntry>> {
+        Ok(nextsize_index::list_snapshots(&self.snapshots_dir(), 500))
+    }
+
+    pub fn snapshot_set_label(&self, path: &str, label: &str) -> ApiResult<()> {
+        Ok(nextsize_index::set_label(&snapshot_path(path)?, label)?)
+    }
+
+    /// Permanently deletes a snapshot. Guards: only `.nxs` files inside the
+    /// app's own snapshots folder, valid signature, not used by an active
+    /// task, and `confirm_name` must equal the file name (typed by the user).
+    pub fn snapshot_delete(&self, path: &str, confirm_name: &str) -> ApiResult<()> {
+        let p = snapshot_path(path)?;
+        let dir = std::fs::canonicalize(self.snapshots_dir()).map_err(|e| ApiError::new("io", e.to_string()))?;
+        let canon = std::fs::canonicalize(&p).map_err(|e| ApiError::new("io", e.to_string()))?;
+        if canon.parent() != Some(dir.as_path()) {
+            return Err(ApiError::new("forbidden", "só é possível excluir snapshots da pasta de snapshots do NextTool"));
+        }
+        let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if confirm_name.trim() != name {
+            return Err(ApiError::new("confirmation_required", format!("digite exatamente \"{name}\" para confirmar a exclusão")));
+        }
+        nextsize_index::validate_for_import(&p).map_err(|e| ApiError::new("snapshot", format!("o arquivo não é um snapshot válido do NextTool: {e}")))?;
+        let active = self.mgr.store().list_tasks(Some(&[TaskState::Queued, TaskState::Running, TaskState::Cancelling, TaskState::WaitingRetry]), 500, 0)?;
+        if active.iter().any(|t| t.checkpoint_json.as_deref().is_some_and(|c| c.contains(&name)) || t.spec_json.contains(&name)) {
+            return Err(ApiError::new("in_use", "o snapshot está em uso por uma tarefa ativa"));
+        }
+        for suffix in ["", "-wal", "-shm"] {
+            let f = PathBuf::from(format!("{}{suffix}", p.display()));
+            if f.exists() {
+                std::fs::remove_file(&f).map_err(|e| ApiError::new("io", e.to_string()))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Validates an external snapshot and copies it into the catalog.
+    pub fn snapshot_import(&self, src: &str) -> ApiResult<String> {
+        let p = snapshot_path(src)?;
+        nextsize_index::validate_for_import(&p)?;
+        let dir = self.snapshots_dir();
+        std::fs::create_dir_all(&dir).map_err(|e| ApiError::new("io", e.to_string()))?;
+        let stem = p.file_stem().map(|s| sanitize(&s.to_string_lossy())).unwrap_or_else(|| "importado".into());
+        let mut dest = dir.join(format!("{stem}.nxs"));
+        let mut i = 1;
+        while dest.exists() {
+            dest = dir.join(format!("{stem}-{i}.nxs"));
+            i += 1;
+        }
+        std::fs::copy(&p, &dest).map_err(|e| ApiError::new("io", e.to_string()))?;
+        Ok(dest.display().to_string())
+    }
+
+    /// Copies a snapshot to `dest` (never overwrites).
+    pub fn snapshot_export(&self, path: &str, dest: &str) -> ApiResult<()> {
+        let p = snapshot_path(path)?;
+        let d = abs_path(dest)?;
+        if d.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("nxs")) != Some(true) {
+            return Err(ApiError::new("invalid_path", "o destino precisa ter extensão .nxs"));
+        }
+        if d.exists() {
+            return Err(ApiError::new("exists", "o arquivo de destino já existe"));
+        }
+        Ok(nextsize_index::export_snapshot(&p, &d)?)
+    }
+
+    pub fn snapshot_build_indexes(&self, path: &str) -> ApiResult<u64> {
+        Ok(nextsize_index::build_filter_indexes(&snapshot_path(path)?)?)
+    }
+
+    pub fn snapshot_compare(&self, a: &str, b: &str, rel: Vec<String>, limit: Option<u32>) -> ApiResult<nextsize_index::CompareLevel> {
+        if rel.len() > 512 || rel.iter().any(|n| n.is_empty() || n.contains(['\\', '/']) || n == "." || n == "..") {
+            return Err(ApiError::new("invalid_argument", "caminho de comparação inválido"));
+        }
+        let (sa, sb) = (self.open_snapshot(a)?, self.open_snapshot(b)?);
+        Ok(nextsize_index::compare_children(&sa, &sb, &rel, page(limit) as usize)?)
     }
 
     pub fn snapshot_top_files(&self, path: &str, limit: Option<u32>) -> ApiResult<Vec<FileRow>> {
@@ -525,6 +611,44 @@ mod tests {
         };
         assert_eq!(c.copy_submit(mirror).unwrap_err().code, "approval_required");
         assert!(c.tasks_list(Some(vec!["bogus".into()]), None, 0).is_err());
+    }
+
+    #[test]
+    fn snapshot_management_guards() {
+        let (t, c) = core();
+        let root = t.path().join("tree");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.txt"), b"abc").unwrap();
+        let id = c.size_scan_submit(ScanRequest { root: root.display().to_string(), snapshot: None, profile: "balanced".into() }).unwrap();
+        let done = c.mgr.run_until_done(&[id], &mut |_| {}).unwrap();
+        let path = serde_json::from_str::<serde_json::Value>(done[0].checkpoint_json.as_ref().unwrap()).unwrap()["snapshot"].as_str().unwrap().to_string();
+        let name = std::path::Path::new(&path).file_name().unwrap().to_string_lossy().into_owned();
+
+        assert_eq!(c.snapshots_list().unwrap().len(), 1);
+        c.snapshot_set_label(&path, "base").unwrap();
+        assert_eq!(c.snapshots_list().unwrap()[0].label.as_deref(), Some("base"));
+
+        // Export → import round trip; outside files cannot be deleted.
+        let exported = t.path().join("export.nxs");
+        c.snapshot_export(&path, &exported.display().to_string()).unwrap();
+        assert_eq!(c.snapshot_export(&path, &exported.display().to_string()).unwrap_err().code, "exists");
+        assert_eq!(c.snapshot_delete(&exported.display().to_string(), "export.nxs").unwrap_err().code, "forbidden");
+        let imported = c.snapshot_import(&exported.display().to_string()).unwrap();
+        assert_eq!(c.snapshots_list().unwrap().len(), 2);
+        let bogus = t.path().join("bogus.nxs");
+        std::fs::write(&bogus, b"garbage").unwrap();
+        assert!(c.snapshot_import(&bogus.display().to_string()).is_err());
+
+        // Compare the snapshot with its imported copy: everything "same".
+        let cmp = c.snapshot_compare(&path, &imported, vec![], Some(50)).unwrap();
+        assert!(cmp.rows.iter().all(|r| r.status == "same" || r.status == "files" && r.delta == 0));
+        assert_eq!(c.snapshot_compare(&path, &imported, vec!["..".into()], None).unwrap_err().code, "invalid_argument");
+
+        // Delete requires the exact name.
+        assert_eq!(c.snapshot_delete(&path, "errado").unwrap_err().code, "confirmation_required");
+        c.snapshot_delete(&path, &name).unwrap();
+        assert!(!std::path::Path::new(&path).exists());
+        assert_eq!(c.snapshots_list().unwrap().len(), 1);
     }
 
     #[test]

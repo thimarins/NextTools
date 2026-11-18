@@ -5,7 +5,7 @@
 2. **Hardlinks contados por caminho.** A política `per_path` fica registrada no snapshot. A deduplicação virá com o modo NTFS rápido e o scanner Linux.
 3. **Nomes não-Unicode** (UTF-16 inválido no Windows, bytes no Linux) são gravados com caracteres de substituição e a flag `NAME_LOSSY`. Se um diretório desses estiver pendente numa *retomada*, o caminho reconstruído fica errado: a listagem falha e é registrada como ocorrência, nunca descartada em silêncio. Correção prevista: gravar o nome bruto (BLOB) quando houver perda.
 4. **Chamadas bloqueadas do SO** (um `FindNextFileW` num compartilhamento travado) não podem ser canceladas instantaneamente (ADR-009).
-5. **Paralelismo adaptativo ainda não implementado.** A concorrência é fixa por perfil (o remoto começa conservador: 4 threads no Equilibrado). `ScanControl::set_concurrency` já permite o ajuste em tempo real; o controlador AIMD é da Fase 2.
+5. **Paralelismo adaptativo implementado para origens remotas (ADR-035), mas não validado em SMB real.** Texto original: A concorrência é fixa por perfil (o remoto começa conservador: 4 threads no Equilibrado). `ScanControl::set_concurrency` já permite o ajuste em tempo real; o controlador AIMD é da Fase 2.
 6. A finalização (índices) cresce de forma **superlinear**: 22 s a 11 M e 312 s a 111 M registros (BENCHMARKS §8.4). Durante esse tempo o snapshot já é consultável como parcial. Próximo passo: adiar os índices de filtro (`ext`, `mtime` = 57% do tempo a 111 M).
 11. Consultas em snapshots **parciais** fazem varredura de tabela (sem índices) e podem atingir o limite de 20 s em snapshots muito grandes; a UI orienta a combinar filtros.
 12. A filtragem por `nome contém` não usa índice (varredura). Em snapshots muito grandes, combine-a com extensão ou tamanho.
@@ -27,7 +27,7 @@
 
 ## Desktop (Fase 1)
 1. **Memória do WebView2:** cerca de 164 MB privados em 6 processos, além dos 29 MB do app. Para servidores com pouca RAM, use a CLI.
-2. **Treemap e comparação de snapshots** ainda não existem na interface (Fase 4). Já existem: explorador com árvore virtualizada sob demanda, lista paginada, filtros combinados com cancelamento, rankings e distribuição.
+2. O treemap mostra um nível por vez (≤ 300 itens + "Outros"). A comparação lê no máximo 20.000 subpastas por nível e lado (aviso exibido).
 3. **Agendamento** e **seleção NextSize → NextCopy** ainda não estão na UI (Fases 3 e 4).
 4. Mudar "Tarefas simultâneas" só vale após reiniciar o app.
 5. A UI ainda não tem testes automatizados de componentes. A verificação da Fase 1 foi feita de ponta a ponta no app real via CDP (ver PHASE1_REPORT §2). Playwright/Vitest ficam para a Fase 2.

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { ArrowRight, ChevronDown, ClipboardList, Copy, Eye, ShieldAlert, Trash2 } from "lucide-react";
-import { api, ApiError } from "@/lib/api";
+import { ArrowRight, ChevronDown, ClipboardList, Copy, Eye, HardDrive, ShieldAlert, Trash2 } from "lucide-react";
+import { api, ApiError, takeCopyPrefill } from "@/lib/api";
 import { useAsync, useThrottledEffect } from "@/lib/hooks";
 import { copyProfiles, verifyLevels } from "@/lib/i18n";
 import { useLive } from "@/lib/live";
@@ -29,6 +29,15 @@ export default function NextCopyPage() {
   const [approved, setApproved] = useState(false);
   const [busy, setBusy] = useState<"plan" | "run" | null>(null);
   const [open, setOpen] = useState<TaskRecord | null>(null);
+
+  const [prefillNote, setPrefillNote] = useState<string | null>(null);
+  useEffect(() => {
+    const p = takeCopyPrefill();
+    if (p) {
+      setSource(p.source);
+      setPrefillNote(p.note);
+    }
+  }, []);
 
   const mirror = profile === "mirror";
   const req: CopyRequest = useMemo(
@@ -104,6 +113,11 @@ export default function NextCopyPage() {
         <Card className="self-start">
           <CardHeader icon={<Copy />} title="Nova cópia" description="Escolha origem e destino. As opções seguras já vêm selecionadas." />
           <CardBody className="grid gap-4">
+            {prefillNote && (
+              <p className="flex items-start gap-2 rounded-lg border border-info/40 bg-info/10 p-3 text-sm">
+                <HardDrive className="mt-0.5 size-4 shrink-0 text-info" /> {prefillNote}
+              </p>
+            )}
             <Field label="Origem" htmlFor="copy-src">
               <PathInput id="copy-src" value={source} onChange={setSource} placeholder="D:\Dados" />
             </Field>

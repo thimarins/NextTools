@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-snapshot-export"
+description = "Enables the snapshot_export command without any pre-configured scope."
+commands.allow = ["snapshot_export"]
+
+[[permission]]
+identifier = "deny-snapshot-export"
+description = "Denies the snapshot_export command without any pre-configured scope."
+commands.deny = ["snapshot_export"]

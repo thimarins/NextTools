@@ -3,7 +3,9 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   Alert,
   AppInfo,
+  CompareLevel,
   CopyRequest,
+  SnapshotEntry,
   DirInfo,
   DirRow,
   DryRunReport,
@@ -66,6 +68,13 @@ export const api = {
   snapshotDirInfo: (path: string, dirId: number) => call<DirInfo>("snapshot_dir_info", { path, dirId }),
   snapshotQuery: (path: string, query: FileQuery, requestId: string) => call<Paged<FileRow>>("snapshot_query", { path, query, requestId }),
   snapshotCancelQuery: (requestId: string) => call<boolean>("snapshot_cancel_query", { requestId }),
+  snapshotsList: () => call<SnapshotEntry[]>("snapshots_list"),
+  snapshotSetLabel: (path: string, label: string) => call<void>("snapshot_set_label", { path, label }),
+  snapshotDelete: (path: string, confirmName: string) => call<void>("snapshot_delete", { path, confirmName }),
+  snapshotImport: (src: string) => call<string>("snapshot_import", { src }),
+  snapshotExport: (path: string, dest: string) => call<void>("snapshot_export", { path, dest }),
+  snapshotBuildIndexes: (path: string) => call<number>("snapshot_build_indexes", { path }),
+  snapshotCompare: (a: string, b: string, rel: string[], limit = 500) => call<CompareLevel>("snapshot_compare", { a, b, rel, limit }),
   snapshotTopFiles: (path: string, limit = 50) => call<FileRow[]>("snapshot_top_files", { path, limit }),
   snapshotTopDirs: (path: string, limit = 50) => call<DirRow[]>("snapshot_top_dirs", { path, limit }),
   snapshotStats: (path: string) => call<Stats>("snapshot_stats", { path }),
@@ -82,6 +91,24 @@ export async function on<T>(event: string, cb: (payload: T) => void): Promise<Un
   if (!isDesktop) return () => {};
   return listen<T>(event, (e) => cb(e.payload));
 }
+
+/** Native "save as" dialog (desktop only). */
+export async function pickSavePath(defaultPath: string, filters: { name: string; extensions: string[] }[]): Promise<string | null> {
+  if (!isDesktop) return null;
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  return (await save({ defaultPath, filters })) ?? null;
+}
+
+/** One-shot hand-off from NextSize to NextCopy (a folder path, never a file list). */
+let copyPrefill: { source: string; note: string } | null = null;
+export const setCopyPrefill = (p: { source: string; note: string } | null) => {
+  copyPrefill = p;
+};
+export const takeCopyPrefill = () => {
+  const p = copyPrefill;
+  copyPrefill = null;
+  return p;
+};
 
 /** Native folder/file picker (desktop only). */
 export async function pickPath(opts: { directory?: boolean; title?: string; filters?: { name: string; extensions: string[] }[] }): Promise<string | null> {

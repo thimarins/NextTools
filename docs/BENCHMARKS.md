@@ -191,3 +191,12 @@ Observação metodológica: o "antes" usou 8 threads de geração sintética; o 
 - Agregados em memória **idênticos** ao `GROUP BY` SQL (`in_memory_aggregates_equal_sql_aggregates`); `year_of` idêntico ao `strftime` do SQLite, inclusive datas negativas e bissextas.
 - **Snapshot parcial consultável** (listar, subpastas, top, consulta, contagens) e rotulado (`partial_snapshot_is_queryable_and_labeled`).
 - **Queda durante a finalização é recuperável**: estado `finalizing` persistido antes de finalizar; a retomada refaz a finalização (idempotente) e o resultado passa no `verify()` com totais exatos (`crash_during_finalization_is_recoverable`).
+
+## 9. Índices de filtro adiados (ADR-030) — 11,1 M registros, sintético em memória, Equilibrado, 2 threads
+
+| Execução | Varredura | Finalização até ficar utilizável | Finalização total | Utilizável após | Antes (§8.4) |
+|---|---|---|---|---|---|
+| 1 | 14,2 s | 9,7 s | 21,7 s | **23,9 s** | ~35,9 s |
+| 2 | 15,1 s | 11,0 s | 23,1 s | **26,1 s** | ~38,1 s |
+
+O tempo total é o mesmo, mas o snapshot pode ser navegado ~12 s antes (−33%). Projeção para 111 M a partir dos tempos medidos por índice (§8.4): utilizável após ~134 s de finalização em vez de 312 s. **Projeção, não medida.**

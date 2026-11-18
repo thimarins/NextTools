@@ -5,6 +5,7 @@ import {
   BarChart3,
   ChevronLeft,
   ChevronRight,
+  Copy,
   File,
   Filter,
   Folder,
@@ -16,7 +17,8 @@ import {
   Square,
   TriangleAlert,
 } from "lucide-react";
-import { api, ApiError, nextRequestId } from "@/lib/api";
+import { toast } from "sonner";
+import { api, ApiError, nextRequestId, setCopyPrefill } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
 import type { DirRow, FileQuery, FileRow, Paged, Summary } from "@/lib/types";
 import { cn, formatBytes, formatCount, formatDate, formatDuration } from "@/lib/utils";
@@ -25,6 +27,7 @@ import { ErrorNote, Loading } from "@/components/states";
 import { Button } from "@/components/ui/button";
 import { Badge, Card, Field, Input, Select, Stat } from "@/components/ui/primitives";
 import { Tabs, TabsContent, TabsList, TabsTrigger, Tooltip } from "@/components/ui/overlay";
+import { Treemap } from "./treemap";
 
 const F_ENUM_ERROR = 1 << 14;
 const F_NOT_FOLLOWED = 1 << 11;
@@ -71,7 +74,7 @@ export function SnapshotExplorer({ path, onClose }: { path: string; onClose: () 
       )}
       {s && (
         <>
-          <SummaryStrip s={s} />
+          <SummaryStrip s={s} path={path} onReload={summary.reload} />
           <Tabs value={tab} onValueChange={setTab}>
             <TabsList>
               <TabsTrigger value="explorer">
@@ -100,9 +103,35 @@ export function SnapshotExplorer({ path, onClose }: { path: string; onClose: () 
   );
 }
 
-function SummaryStrip({ s }: { s: Summary }) {
+function SummaryStrip({ s, path, onReload }: { s: Summary; path: string; onReload: () => void }) {
+  const [building, setBuilding] = useState(false);
   return (
     <Card className="p-[var(--card-pad)]">
+      {s.complete && !s.filter_indexes_ready && (
+        <div className="mb-4 flex flex-wrap items-center gap-2 rounded-lg border border-info/40 bg-info/10 px-3 py-2 text-sm">
+          <Filter className="size-4 text-info" />
+          <span className="flex-1">Os índices de filtro (extensão e datas) ainda não foram construídos. A navegação já está completa; filtros funcionam, mas podem ser lentos.</span>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={building}
+            onClick={async () => {
+              setBuilding(true);
+              try {
+                const ms = await api.snapshotBuildIndexes(path);
+                toast.success(`Índices construídos em ${formatDuration(ms)}`);
+                onReload();
+              } catch (e) {
+                toast.error("Falha ao construir índices", { description: e instanceof ApiError ? e.message : String(e) });
+              } finally {
+                setBuilding(false);
+              }
+            }}
+          >
+            {building ? <Loader2 className="animate-spin" /> : null} Construir agora
+          </Button>
+        </div>
+      )}
       {!s.complete && (
         <div className="mb-4 flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/12 px-3 py-2 text-sm">
           <TriangleAlert className="mt-0.5 size-4 shrink-0 text-warning" />
@@ -147,7 +176,7 @@ function ExplorerPane({ path, summary, dir, onDir }: { path: string; summary: Su
   return (
     <div className="grid gap-4 [&>*]:min-w-0 lg:grid-cols-[minmax(260px,360px)_1fr]">
       <TreePane path={path} summary={summary} selected={dir} onSelect={onDir} />
-      <ListPane path={path} dirId={dir} onOpenDir={onDir} />
+      <ListPane path={path} dirId={dir} onOpenDir={onDir} summary={summary} />
     </div>
   );
 }
@@ -286,12 +315,13 @@ function TreePane({ path, summary, selected, onSelect }: { path: string; summary
 }
 
 /** Paginated listing of one directory (folders and files, largest first). */
-function ListPane({ path, dirId, onOpenDir }: { path: string; dirId: number; onOpenDir: (id: number) => void }) {
+function ListPane({ path, dirId, onOpenDir, summary }: { path: string; dirId: number; onOpenDir: (id: number) => void; summary: Summary }) {
   const [page, setPage] = useState(0);
   const [data, setData] = useState<Paged<DirRow> | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [loading, setLoading] = useState(false);
   const latest = useRef("");
+  const [view, setView] = useState<"list" | "treemap">("list");
   const info = useAsync(() => api.snapshotDirInfo(path, dirId), [path, dirId]);
 
   useEffect(() => setPage(0), [dirId]);
@@ -326,8 +356,35 @@ function ListPane({ path, dirId, onOpenDir }: { path: string; dirId: number; onO
           </span>
         ))}
         {loading && <Loader2 className="ml-2 size-3.5 animate-spin text-muted-foreground" />}
+        <div className="ml-auto flex rounded-md bg-muted p-0.5 text-xs">
+          {(["list", "treemap"] as const).map((v) => (
+            <button key={v} className={cn("cursor-default rounded px-2 py-1 font-medium text-muted-foreground", view === v && "bg-card text-foreground shadow-sm")} onClick={() => setView(v)}>
+              {v === "list" ? "Lista" : "Treemap"}
+            </button>
+          ))}
+        </div>
+        {chain.length > 0 && (
+          <Tooltip content="Abre o NextCopy com esta pasta como origem. Os arquivos atuais serão revalidados (use a Prévia).">
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                const full = [chain[0][1].replace(/[\\/]+$/, ""), ...chain.slice(1).map((c) => c[1])].join("\\");
+                setCopyPrefill({
+                  source: chain.length === 1 ? chain[0][1] : full,
+                  note: `Origem vinda de uma análise de ${formatDate(summary.finished_at ?? summary.started_at)}. O conteúdo pode ter mudado desde então: gere a Prévia para ver o estado atual antes de copiar.`,
+                });
+                window.location.hash = "/nextcopy";
+              }}
+            >
+              <Copy /> Copiar com NextCopy
+            </Button>
+          </Tooltip>
+        )}
       </div>
-      {error ? (
+      {view === "treemap" ? (
+        <Treemap path={path} dirId={dirId} onOpenDir={onOpenDir} />
+      ) : error ? (
         <ErrorNote error={error} />
       ) : !data ? (
         <Loading />
@@ -378,7 +435,7 @@ function ListPane({ path, dirId, onOpenDir }: { path: string; dirId: number; onO
           </table>
         </div>
       )}
-      <Pager page={page} pageSize={LIST_PAGE} shown={data?.rows.length ?? 0} total={total} onPage={setPage} elapsed={data?.elapsed_ms} />
+      {view === "list" && <Pager page={page} pageSize={LIST_PAGE} shown={data?.rows.length ?? 0} total={total} onPage={setPage} elapsed={data?.elapsed_ms} />}
     </Card>
   );
 }

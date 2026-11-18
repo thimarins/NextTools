@@ -90,6 +90,9 @@ export interface Summary {
   state: string;
   complete: boolean;
   finalized: boolean;
+  filter_indexes_ready: boolean;
+  label: string | null;
+  usable_ms: number | null;
   started_at: number | null;
   finished_at: number | null;
   files: number;
@@ -133,10 +136,47 @@ export interface Paged<T> {
   elapsed_ms: number;
 }
 
+export interface SnapshotEntry {
+  path: string;
+  file_name: string;
+  size_bytes: number;
+  modified: number;
+  root: string | null;
+  state: string | null;
+  files: number | null;
+  bytes: number | null;
+  started_at: number | null;
+  label: string | null;
+  invalid: string | null;
+}
+
+export interface CompareRow {
+  name: string;
+  status: "added" | "removed" | "grew" | "shrank" | "same" | "files";
+  a_size: number | null;
+  b_size: number | null;
+  a_files: number | null;
+  b_files: number | null;
+  delta: number;
+  pct: number | null;
+  has_children: boolean;
+}
+
+export interface CompareLevel {
+  path: string[];
+  a_found: boolean;
+  b_found: boolean;
+  a_total: number | null;
+  b_total: number | null;
+  rows: CompareRow[];
+  truncated: boolean;
+}
+
 export interface DirInfo {
   chain: [number, string][];
   subdirs: number;
   files: number;
+  size: number;
 }
 
 export interface FileQuery {
@@ -188,6 +228,7 @@ export interface ScanProgress {
   pending_dirs: number;
   spilled_dirs: number;
   rows_committed: number;
+  concurrency?: number;
 }
 
 /** NextCopy progress */

@@ -12,7 +12,9 @@ import { ErrorNote, Loading } from "@/components/states";
 import { TaskDetailDialog, TaskRow } from "@/components/tasks";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader, Empty, Field, PageHeader, Select } from "@/components/ui/primitives";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/overlay";
 import { SnapshotExplorer } from "./explorer";
+import { CompareView, SnapshotsPanel } from "./snapshots";
 
 export default function NextSizePage() {
   const { version } = useLive();
@@ -22,6 +24,8 @@ export default function NextSizePage() {
   const [open, setOpen] = useState<TaskRecord | null>(null);
   const [snapshot, setSnapshot] = useState<string | null>(null);
   const [external, setExternal] = useState("");
+  const [tab, setTab] = useState("scans");
+  const [compare, setCompare] = useState<[string, string] | null>(null);
 
   const tasks = useAsync(() => api.tasksList(undefined, 300), []);
   useThrottledEffect(tasks.reload, version, 1500);
@@ -44,6 +48,9 @@ export default function NextSizePage() {
 
   if (snapshot) {
     return <SnapshotExplorer path={snapshot} key={snapshot} onClose={() => setSnapshot(null)} />;
+  }
+  if (compare) {
+    return <CompareView a={compare[0]} b={compare[1]} onClose={() => setCompare(null)} />;
   }
 
   return (
@@ -77,8 +84,15 @@ export default function NextSizePage() {
         <Card className="self-start">
           <CardHeader
             icon={<FolderTree />}
-            title="Análises"
-            description="Clique para explorar. Análises em andamento ou interrompidas abrem como dados parciais."
+            title={
+              <Tabs value={tab} onValueChange={setTab}>
+                <TabsList>
+                  <TabsTrigger value="scans">Análises</TabsTrigger>
+                  <TabsTrigger value="snapshots">Snapshots salvos</TabsTrigger>
+                </TabsList>
+              </Tabs>
+            }
+            description={tab === "scans" ? "Clique para explorar. Análises em andamento ou interrompidas abrem como dados parciais." : "Abra, rotule, compare, exporte ou exclua resultados de análises."}
             actions={
               <div className="flex w-72 gap-2">
                 <PathInput value={external} onChange={setExternal} placeholder="Abrir snapshot .nxs…" file={{ name: "Snapshot NextSize", extensions: ["nxs"] }} />
@@ -88,7 +102,9 @@ export default function NextSizePage() {
               </div>
             }
           />
-          {tasks.loading && !tasks.data ? (
+          {tab === "snapshots" ? (
+            <SnapshotsPanel onOpen={setSnapshot} onCompare={(a, b) => setCompare([a, b])} />
+          ) : tasks.loading && !tasks.data ? (
             <Loading />
           ) : tasks.error ? (
             <ErrorNote error={tasks.error} onRetry={tasks.reload} />

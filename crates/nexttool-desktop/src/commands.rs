@@ -94,6 +94,41 @@ pub async fn snapshot_dir_info(core: St<'_>, path: String, dir_id: i64) -> ApiRe
 }
 
 #[tauri::command]
+pub async fn snapshots_list(core: St<'_>) -> ApiResult<Vec<nextsize_index::SnapshotEntry>> {
+    blocking(core.inner(), |c| c.snapshots_list()).await
+}
+
+#[tauri::command]
+pub async fn snapshot_set_label(core: St<'_>, path: String, label: String) -> ApiResult<()> {
+    blocking(core.inner(), move |c| c.snapshot_set_label(&path, &label)).await
+}
+
+#[tauri::command]
+pub async fn snapshot_delete(core: St<'_>, path: String, confirm_name: String) -> ApiResult<()> {
+    blocking(core.inner(), move |c| c.snapshot_delete(&path, &confirm_name)).await
+}
+
+#[tauri::command]
+pub async fn snapshot_import(core: St<'_>, src: String) -> ApiResult<String> {
+    blocking(core.inner(), move |c| c.snapshot_import(&src)).await
+}
+
+#[tauri::command]
+pub async fn snapshot_export(core: St<'_>, path: String, dest: String) -> ApiResult<()> {
+    blocking(core.inner(), move |c| c.snapshot_export(&path, &dest)).await
+}
+
+#[tauri::command]
+pub async fn snapshot_build_indexes(core: St<'_>, path: String) -> ApiResult<u64> {
+    blocking(core.inner(), move |c| c.snapshot_build_indexes(&path)).await
+}
+
+#[tauri::command]
+pub async fn snapshot_compare(core: St<'_>, a: String, b: String, rel: Vec<String>, limit: Option<u32>) -> ApiResult<nextsize_index::CompareLevel> {
+    blocking(core.inner(), move |c| c.snapshot_compare(&a, &b, rel, limit)).await
+}
+
+#[tauri::command]
 pub async fn snapshot_top_files(core: St<'_>, path: String, limit: Option<u32>) -> ApiResult<Vec<FileRow>> {
     blocking(core.inner(), move |c| c.snapshot_top_files(&path, limit)).await
 }

@@ -129,7 +129,7 @@ impl TaskRunner for SizeScanRunner {
             }
         };
         ctx.checkpoint(&serde_json::json!({ "snapshot": s.snapshot }).to_string());
-        let control = Arc::new(ScanControl::new(tuning.threads));
+        let control = Arc::new(ScanControl::new(tuning.spawn_threads()));
         let (c2, p2) = (control.clone(), progress.clone());
         let handle = std::thread::spawn(move || run_scan(&opts, enumerator, sink, start, c2, p2));
         let t0 = Instant::now();

@@ -23,6 +23,12 @@ pub struct Summary {
     pub complete: bool,
     /// Indexes and directory totals are built (fast queries, recursive sizes).
     pub finalized: bool,
+    /// Extension/date indexes built (built after the snapshot becomes usable).
+    pub filter_indexes_ready: bool,
+    /// User label (Snapshots screen).
+    pub label: Option<String>,
+    /// Time from end of scan until the snapshot was usable.
+    pub usable_ms: Option<u64>,
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
     pub files: u64,
@@ -140,6 +146,16 @@ impl Snapshot {
         &self.path
     }
 
+    pub(crate) fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
+    /// Filter indexes (extension, dates) exist. Snapshots written before
+    /// ADR-030 have no marker but always built them.
+    pub fn filter_indexes_ready(&self) -> bool {
+        !matches!(get_meta(&self.conn, "filter_indexes").ok().flatten().as_deref(), Some("pending"))
+    }
+
     /// Token to cancel a running query from another thread.
     pub fn cancel_token(&self) -> Arc<AtomicBool> {
         self.cancel.clone()
@@ -167,6 +183,9 @@ impl Snapshot {
             root: self.meta("root")?.unwrap_or_default(),
             complete,
             finalized: self.is_finalized(),
+            filter_indexes_ready: self.filter_indexes_ready(),
+            label: self.meta("label")?,
+            usable_ms: opt_i64(self.meta("usable_ms")?).map(|v| v as u64),
             started_at: opt_i64(self.meta("started_at")?),
             finished_at: opt_i64(self.meta("finished_at")?),
             files: n("files")?,
@@ -350,6 +369,14 @@ impl Snapshot {
         })
     }
 
+    /// Total size of a directory (recursive when finalized, direct otherwise).
+    pub fn dir_size(&self, dir_id: i64) -> Result<u64, QueryError> {
+        Ok(self
+            .conn
+            .query_row("SELECT COALESCE(t_size, d_size, 0) FROM dirs WHERE id=?1", [dir_id], |r| r.get::<_, i64>(0))?
+            .max(0) as u64)
+    }
+
     pub fn query_files(&self, q: &FileQuery) -> Result<Vec<FileRow>, QueryError> {
         let mut sql = String::from("SELECT f.id, f.parent, f.name, f.size, f.mtime, f.flags FROM files f");
         let mut cond: Vec<String> = Vec::new();
@@ -399,7 +426,10 @@ impl Snapshot {
         args.push(Value::Integer(limit as i64));
         args.push(Value::Integer(q.offset as i64));
 
-        let rows: Vec<(i64, i64, String, i64, Option<i64>, u32)> = self.guarded(q.time_limit, || {
+        // Without filter indexes, extension/date filters scan: bound them.
+        let uses_filter_idx = q.ext.is_some() || q.modified_before.is_some() || q.modified_after.is_some() || q.year.is_some();
+        let limit = q.time_limit.or_else(|| (uses_filter_idx && !self.filter_indexes_ready()).then_some(PARTIAL_TIME_LIMIT));
+        let rows: Vec<(i64, i64, String, i64, Option<i64>, u32)> = self.guarded(limit, || {
             let mut st = self.conn.prepare(&sql)?;
             let rows = st.query_map(params_from_iter(args.iter()), |r| {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))

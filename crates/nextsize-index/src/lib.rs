@@ -7,11 +7,15 @@
 //! - `reader`: summary, rankings, directory listing, filtered queries with
 //!   pagination, time limit and cancellation.
 
+mod compare;
+mod maintenance;
 mod reader;
 mod resume;
 mod schema;
 mod writer;
 
+pub use compare::{compare_children, CompareLevel, CompareRow};
+pub use maintenance::{build_filter_indexes, export_snapshot, list_snapshots, set_label, validate_for_import, SnapshotEntry};
 pub use reader::{DirRow, ExtRow, FileQuery, FileRow, IssueRow, QueryError, Snapshot, Summary, YearRow};
 pub use resume::{open_for_resume, ResumePlan};
 pub use writer::IndexWriter;

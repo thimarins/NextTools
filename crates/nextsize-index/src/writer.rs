@@ -387,7 +387,7 @@ impl IndexWriter {
 
     /// Builds indexes, rolls up directory totals and aggregates.
     fn finalize(&mut self) -> rusqlite::Result<()> {
-        for (name, sql) in schema::FINAL_INDEXES {
+        for (name, sql) in schema::ESSENTIAL_INDEXES {
             self.timed(name, sql)?;
         }
         let t = Instant::now();
@@ -443,7 +443,7 @@ impl IndexWriter {
 
     /// Finalization with temporary resources: parallel sorter threads and a
     /// larger page cache (restored afterwards).
-    fn finalize_with_resources(&mut self) -> rusqlite::Result<()> {
+    fn with_resources(&mut self, f: impl FnOnce(&mut Self) -> rusqlite::Result<()>) -> rusqlite::Result<()> {
         // Diagnostic overrides (benchmarks only; documented in BENCHMARKS.md).
         let env = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<i64>().ok());
         let threads = env("NEXTTOOL_FIN_THREADS").unwrap_or(self.finalize_threads as i64);
@@ -451,7 +451,7 @@ impl IndexWriter {
         self.conn.pragma_update(None, "threads", threads)?;
         let normal: i64 = self.conn.query_row("PRAGMA cache_size", [], |r| r.get(0))?;
         self.conn.pragma_update(None, "cache_size", -cache_kib)?;
-        let r = self.finalize();
+        let r = f(self);
         let _ = self.conn.pragma_update(None, "cache_size", normal);
         let _ = self.conn.pragma_update(None, "threads", 0);
         r
@@ -505,14 +505,15 @@ impl ScanSink for IndexWriter {
         let r = (|| -> rusqlite::Result<()> {
             self.commit()?;
             let t = Instant::now();
-            if o.state.is_terminal_ok() {
+            let ok = o.state.is_terminal_ok();
+            if ok {
                 // Durable marker: a crash during finalization leaves the
                 // snapshot resumable (resume re-runs the idempotent finalize).
                 set_meta(&self.conn, "state", nextsize_core::ScanState::Finalizing.as_str())?;
-                self.finalize_with_resources()?;
+                self.with_resources(|w| w.finalize())?;
+                set_meta(&self.conn, "filter_indexes", "pending")?;
             }
-            let finalize_ms = t.elapsed().as_millis() as u64;
-            let timings = serde_json::to_string(&self.timings).unwrap_or_default();
+            let usable_ms = t.elapsed().as_millis() as u64;
             let ingest = serde_json::json!({
                 "insert_ms": self.t_write.as_millis() as u64,
                 "commit_ms": self.t_commit.as_millis() as u64,
@@ -520,6 +521,8 @@ impl ScanSink for IndexWriter {
             })
             .to_string();
             set_meta(&self.conn, "ingest_timings", &ingest)?;
+            // From here the snapshot is complete and usable (navigation,
+            // rankings, totals). Filter indexes follow (ADR-030).
             for (k, v) in [
                 ("state", o.state.as_str().to_string()),
                 ("finished_at", now_unix().to_string()),
@@ -528,10 +531,22 @@ impl ScanSink for IndexWriter {
                 ("bytes", o.bytes.to_string()),
                 ("issues", o.issues.to_string()),
                 ("scan_ms", o.elapsed_ms.to_string()),
-                ("finalize_ms", finalize_ms.to_string()),
-                ("finalize_timings", timings),
+                ("usable_ms", usable_ms.to_string()),
+                ("finalize_ms", usable_ms.to_string()),
+                ("finalize_timings", serde_json::to_string(&self.timings).unwrap_or_default()),
             ] {
                 set_meta(&self.conn, k, &v)?;
+            }
+            if ok {
+                self.with_resources(|w| {
+                    for (name, sql) in schema::FILTER_INDEXES {
+                        w.timed(name, sql)?;
+                    }
+                    Ok(())
+                })?;
+                set_meta(&self.conn, "filter_indexes", "ready")?;
+                set_meta(&self.conn, "finalize_ms", &(t.elapsed().as_millis() as u64).to_string())?;
+                set_meta(&self.conn, "finalize_timings", &serde_json::to_string(&self.timings).unwrap_or_default())?;
             }
             self.conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
             Ok(())

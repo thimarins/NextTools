@@ -5,6 +5,7 @@
 //! bounded in-memory stack that spills to a temp file, so engine RAM does not
 //! grow with the number of files or directories. See docs/ARCHITECTURE.md.
 
+pub mod adaptive;
 mod control;
 mod engine;
 mod frontier;

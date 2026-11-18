@@ -40,13 +40,20 @@ CREATE TABLE ext_stats(ext INTEGER PRIMARY KEY, files INTEGER NOT NULL, size INT
 CREATE TABLE year_stats(year INTEGER, files INTEGER NOT NULL, size INTEGER NOT NULL);
 "#;
 
-pub const FINAL_INDEXES: &[(&str, &str)] = &[
+/// Needed for navigation, rankings and roll-up: built before the snapshot is
+/// marked usable.
+pub const ESSENTIAL_INDEXES: &[(&str, &str)] = &[
     ("idx_dirs_parent", "CREATE INDEX IF NOT EXISTS idx_dirs_parent ON dirs(parent)"),
     ("idx_dirs_depth", "CREATE INDEX IF NOT EXISTS idx_dirs_depth ON dirs(depth, parent)"),
     ("idx_files_parent", "CREATE INDEX IF NOT EXISTS idx_files_parent ON files(parent)"),
     ("idx_files_size", "CREATE INDEX IF NOT EXISTS idx_files_size ON files(size DESC)"),
-    ("idx_files_mtime", "CREATE INDEX IF NOT EXISTS idx_files_mtime ON files(mtime)"),
+];
+
+/// Only accelerate filters (extension, dates). Built after the snapshot is
+/// already usable (ADR-030); until then those filters scan with a time limit.
+pub const FILTER_INDEXES: &[(&str, &str)] = &[
     ("idx_files_ext", "CREATE INDEX IF NOT EXISTS idx_files_ext ON files(ext, size DESC)"),
+    ("idx_files_mtime", "CREATE INDEX IF NOT EXISTS idx_files_mtime ON files(mtime)"),
 ];
 
 pub const TSIZE_INDEX: &str = "CREATE INDEX IF NOT EXISTS idx_dirs_tsize ON dirs(t_size DESC)";

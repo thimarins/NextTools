@@ -318,7 +318,7 @@ Princípios:
 - Erros chegam como `{ code, message }`. Códigos estáveis: `invalid_path`, `not_found`, `invalid_argument`, `invalid_job`, `invalid_state`, `approval_required`, `cancelled`, `time_limit`, `not_finalized`, `store`, `snapshot`, `engine`, `internal`, `unsupported`.
 - **Allowlist (ADR-018):** cada comando é uma permissão explícita na capability. Não há acesso genérico a arquivos, shell ou rede no webview.
 
-### Comandos (24)
+### Comandos (31)
 
 | Comando | Entrada | Saída |
 |---|---|---|
@@ -332,7 +332,13 @@ Princípios:
 | `snapshot_summary` | `path` (.nxs) | `Summary` (lê só o `meta`; ~2 ms) |
 | `snapshot_list_dir` | `path, dirId, offset, limit, requestId` | `{ request_id, rows: DirRow[], elapsed_ms }` |
 | `snapshot_list_subdirs` | `path, dirId, offset, limit, requestId` | só subpastas (árvore), maiores primeiro, paginado |
-| `snapshot_dir_info` | `path, dirId` | `{ chain: [id, nome][], subdirs, files }` (breadcrumb + total para paginação) |
+| `snapshot_dir_info` | `path, dirId` | `{ chain: [id, nome][], subdirs, files, size }` (breadcrumb, total para paginação, tamanho para o treemap) |
+| `snapshots_list` | — | catálogo da pasta de snapshots (só `meta` de cada arquivo, ≤ 500) |
+| `snapshot_set_label` | `path, label` | rótulo (sem renomear o arquivo) |
+| `snapshot_delete` | `path, confirmName` | exclusão permanente: só `.nxs` válidos da pasta do app, não usados por tarefa ativa, com o nome digitado |
+| `snapshot_import` / `snapshot_export` | `src` / `path, dest` | importação validada (assinatura, schema, `quick_check`) / exportação consistente via `VACUUM INTO`, sem sobrescrever |
+| `snapshot_build_indexes` | `path` | constrói índices de filtro pendentes |
+| `snapshot_compare` | `a, b, rel[], limit` | comparação de um nível por caminho (ADR-032) |
 | `snapshot_top_files` / `snapshot_top_dirs` | `path, limit` | `FileRow[]` / `DirRow[]` |
 | `snapshot_query` | `path, query: { min_size, max_size, ext, modified_before/after, year, name_contains, offset, limit }, requestId` | `{ request_id, rows, elapsed_ms }`; tempo limite de 30 s |
 | `snapshot_cancel_query` | `requestId` | `bool` |

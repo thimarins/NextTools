@@ -46,10 +46,47 @@ pub struct Tuning {
     pub sqlite_cache_kib: u64,
     /// Run enumeration threads in background (low CPU and I/O priority) mode.
     pub background_priority: bool,
+    /// Adapt concurrency to the server (network sources). `threads` is then
+    /// the starting point and `max_threads` the ceiling.
+    #[serde(default)]
+    pub adaptive: bool,
+    #[serde(default)]
+    pub max_threads: usize,
+    #[serde(default = "default_interval")]
+    pub adaptive_interval_ms: u64,
+}
+
+fn default_interval() -> u64 {
+    2_000
 }
 
 impl Tuning {
+    /// Threads to spawn: the ceiling when adaptive, else the fixed count.
+    pub fn spawn_threads(&self) -> usize {
+        if self.adaptive {
+            self.max_threads.max(self.threads).max(1)
+        } else {
+            self.threads.max(1)
+        }
+    }
+
     pub fn for_profile(profile: Profile, remote: bool, cores: usize) -> Tuning {
+        let mut t = Self::base(profile, remote, cores);
+        if remote {
+            // Network sources: start conservative, adapt to the server.
+            t.adaptive = true;
+            t.max_threads = match profile {
+                Profile::Economy => 4,
+                Profile::Balanced => 16,
+                Profile::Fast => 32,
+            };
+        } else {
+            t.max_threads = t.threads;
+        }
+        t
+    }
+
+    fn base(profile: Profile, remote: bool, cores: usize) -> Tuning {
         let cores = cores.max(1);
         match profile {
             Profile::Economy => Tuning {
@@ -61,6 +98,9 @@ impl Tuning {
                 commit_interval_ms: 2_000,
                 sqlite_cache_kib: 8 * 1024,
                 background_priority: true,
+                adaptive: false,
+                max_threads: 0,
+                adaptive_interval_ms: 2_000,
             },
             Profile::Balanced => Tuning {
                 threads: if remote { 4 } else { cores.clamp(2, 8) },
@@ -71,6 +111,9 @@ impl Tuning {
                 commit_interval_ms: 1_000,
                 sqlite_cache_kib: 32 * 1024,
                 background_priority: false,
+                adaptive: false,
+                max_threads: 0,
+                adaptive_interval_ms: 2_000,
             },
             Profile::Fast => Tuning {
                 threads: if remote { 16 } else { (cores * 2).clamp(4, 32) },
@@ -81,6 +124,9 @@ impl Tuning {
                 commit_interval_ms: 1_000,
                 sqlite_cache_kib: 128 * 1024,
                 background_priority: false,
+                adaptive: false,
+                max_threads: 0,
+                adaptive_interval_ms: 2_000,
             },
         }
     }

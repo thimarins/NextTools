@@ -685,6 +685,9 @@ struct BenchResult {
     commits: u64,
     /// Finalization steps (index builds, roll-up, aggregates, analyze…).
     finalize_steps: Option<serde_json::Value>,
+    /// Finalization time until the snapshot became usable (essential indexes,
+    /// roll-up, aggregates); filter indexes follow (ADR-030).
+    usable_ms: Option<u64>,
     cores: usize,
     cpu: String,
     os: String,
@@ -736,7 +739,7 @@ fn bench(b: BenchArgs) -> Result<i32, String> {
         } else {
             Box::new(IndexWriter::create(&db, &opts, enumerator.name(), progress.clone()).map_err(|e| e.to_string())?)
         };
-        let control = Arc::new(ScanControl::new(tuning.threads));
+        let control = Arc::new(ScanControl::new(tuning.spawn_threads()));
         let (p2, c2, o2, e2) = (progress.clone(), control.clone(), opts.clone(), enumerator.clone());
         let t0 = Instant::now();
         let h = std::thread::spawn(move || run_scan(&o2, e2, sink, ScanStart::Fresh, c2, p2));
@@ -757,6 +760,7 @@ fn bench(b: BenchArgs) -> Result<i32, String> {
         let after = nexttool_core::process::self_stats();
         let (mut index_mb, mut open_ms, mut top_ms, mut q_ms, mut ls_ms) = (None, None, None, None, None);
         let (mut insert_ms, mut commit_ms, mut finalize_steps) = (None, None, None);
+        let mut usable_ms: Option<u64> = None;
         if !b.no_persist {
             index_mb = Some(file_size(&db) as f64 / 1_048_576.0);
             let t = Instant::now();
@@ -768,6 +772,7 @@ fn bench(b: BenchArgs) -> Result<i32, String> {
                 insert_ms = j["insert_ms"].as_u64();
                 commit_ms = j["commit_ms"].as_u64();
             }
+            usable_ms = s.meta_value("usable_ms").ok().flatten().and_then(|v| v.parse().ok());
             if let Ok(Some(v)) = s.meta_value("finalize_timings") {
                 let steps: Vec<(String, u64)> = serde_json::from_str(&v).unwrap_or_default();
                 finalize_steps = Some(serde_json::Value::Object(steps.into_iter().map(|(k, v)| (k, serde_json::json!(v))).collect()));
@@ -830,6 +835,7 @@ fn bench(b: BenchArgs) -> Result<i32, String> {
             commit_ms,
             commits: progress.commits.load(std::sync::atomic::Ordering::Relaxed),
             finalize_steps,
+            usable_ms,
             cores,
             cpu: std::env::var("PROCESSOR_IDENTIFIER").unwrap_or_default(),
             os: std::env::consts::OS.into(),

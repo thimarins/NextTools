@@ -72,6 +72,7 @@ export function TaskProgressText({ t }: { t: TaskRecord }) {
     return (
       <span>
         {formatCount(sp.files)} arquivos · {formatCount(sp.dirs)} pastas · {formatBytes(sp.bytes)}
+        {sp.concurrency ? ` · ${sp.concurrency} threads` : ""}
         {sp.issues > 0 && <span className="text-warning"> · {sp.issues} ocorrências</span>}
       </span>
     );
